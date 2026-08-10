@@ -59,27 +59,27 @@ fn process_message(bytes: &[u8], sender: Option<&mut Sender>) -> anyhow::Result<
             if let Some(s) = sender {
                 db::persist_lob(s, inst_id, lob).context("failed to persist lob levels")?;
             }
-            logging::debug(
-                "forwarder",
-                &format!("{topic}: lob {level_count} levels (ts={})", lob.ts),
+            log::debug!(
+                "[forwarder] {topic}: lob {level_count} levels (ts={})",
+                lob.ts
             );
         }
         (MarketDataItem::Trade(trade), "trade") => {
             if let Some(s) = sender {
                 db::persist_trade(s, inst_id, trade).context("failed to persist trade")?;
             }
-            logging::info(
-                "forwarder",
-                &format!(
-                    "{topic}: trade px={} sz={} side={} (ts={})",
-                    trade.price, trade.size, trade.side, trade.ts
-                ),
+            log::info!(
+                "[forwarder] {topic}: trade px={} sz={} side={} (ts={})",
+                trade.price,
+                trade.size,
+                trade.side,
+                trade.ts
             );
         }
         _ => {
-            logging::warn(
-                "forwarder",
-                &format!("topic/item kind mismatch: {topic} → {}", item_kind(&item)),
+            log::warn!(
+                "[forwarder] topic/item kind mismatch: {topic} → {}",
+                item_kind(&item)
             );
         }
     }
@@ -101,19 +101,19 @@ fn receive_loop(
 ) {
     loop {
         if shutdown.load(Ordering::Relaxed) {
-            logging::info("forwarder", "shutdown requested, stopping receive loop");
+            log::info!("[forwarder] shutdown requested, stopping receive loop");
             break;
         }
 
         match sub_socket.recv() {
             Ok(message) => {
                 if let Err(e) = process_message(message.as_slice(), sender.as_mut()) {
-                    logging::error("forwarder", &format!("processing error: {e}"));
+                    log::error!("[forwarder] processing error: {e}");
                 }
             }
             Err(nng::Error::TimedOut) => continue,
             Err(e) => {
-                logging::warn("forwarder", &format!("NNG recv error: {e}"));
+                log::warn!("[forwarder] NNG recv error: {e}");
                 thread::sleep(Duration::from_millis(500));
             }
         }
@@ -123,12 +123,12 @@ fn receive_loop(
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
-    let _log = logging::init();
+    logging::init();
 
     let qdb_conf = db::resolve_questdb_conf(cli.qdb_conf.as_deref());
 
-    logging::info("system", &format!("NNG broker: {}", cli.nng_addr));
-    logging::info("system", &format!("QuestDB conf: {}", qdb_conf));
+    log::info!("[system] NNG broker: {}", cli.nng_addr);
+    log::info!("[system] QuestDB conf: {}", qdb_conf);
 
     // Run migrations before connecting the ILP sender.
     db::run_migrations(&qdb_conf)
@@ -144,31 +144,31 @@ async fn main() -> Result<()> {
 
     // Connect QuestDB ILP sender (skip in dry-run).
     let sender: Option<Sender> = if cli.dry_run {
-        logging::info("system", "dry-run mode: QuestDB sender not connected");
+        log::info!("[system] dry-run mode: QuestDB sender not connected");
         None
     } else {
         let s = db::connect(&qdb_conf)
             .await
             .context("failed to connect to QuestDB")?;
-        logging::info("system", "connected to QuestDB");
+        log::info!("[system] connected to QuestDB");
         Some(s)
     };
 
     // Connect NNG subscriber.
     let sub_socket = subscriber::NngSubscriber::new(&cli.nng_addr)
         .with_context(|| format!("failed to connect NNG subscriber to {}", cli.nng_addr))?;
-    logging::info("system", "subscribed to NNG PUB broker");
+    log::info!("[system] subscribed to NNG PUB broker");
 
     // Spawn the blocking receive loop.
     let shutdown = Arc::new(AtomicBool::new(false));
     let shutdown_loop = Arc::clone(&shutdown);
     let handle = thread::spawn(move || receive_loop(sub_socket, sender, shutdown_loop));
-    logging::info("system", "forwarder running (Ctrl+C to stop)");
+    log::info!("[system] forwarder running (Ctrl+C to stop)");
 
     // Wait for shutdown signal.
     tokio::select! {
         _ = tokio::signal::ctrl_c() => {
-            logging::info("system", "Ctrl+C received, shutting down");
+            log::info!("[system] Ctrl+C received, shutting down");
         }
         _ = async {
             if cli.test_timeout_secs > 0 {
@@ -177,7 +177,7 @@ async fn main() -> Result<()> {
                 std::future::pending::<()>().await;
             }
         } => {
-            logging::info("system", "test timeout reached, shutting down");
+            log::info!("[system] test timeout reached, shutting down");
         }
     }
 
@@ -185,10 +185,10 @@ async fn main() -> Result<()> {
 
     // Drain the recv timeout window (~500 ms) so the loop notices shutdown.
     if handle.join().is_err() {
-        logging::warn("system", "forwarder thread did not join cleanly");
+        log::warn!("[system] forwarder thread did not join cleanly");
     }
 
-    logging::info("system", "bye");
+    log::info!("[system] bye");
     Ok(())
 }
 

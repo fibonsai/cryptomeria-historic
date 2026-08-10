@@ -5,7 +5,6 @@
 //! actually exists on the wire payload.
 
 use crate::items::{LobItem, TradeItem};
-use crate::logging;
 use crate::migrate::{Migration, QuestDbMigrator};
 use anyhow::Result;
 use questdb::ingress::{Buffer, Sender, TimestampNanos};
@@ -93,10 +92,10 @@ pub async fn apply_ttl(ttl_hours: u64, questdb_conf: &str) -> Result<()> {
             Ok(resp) if resp.status().is_success() => {}
             Ok(resp) => {
                 let text = resp.text().await.unwrap_or_default();
-                logging::warn("ttl", &format!("table {table}: {text}"));
+                log::warn!("[ttl] table {table}: {text}");
             }
             Err(e) => {
-                logging::warn("ttl", &format!("table {table}: {e}"));
+                log::warn!("[ttl] table {table}: {e}");
             }
         }
     }
