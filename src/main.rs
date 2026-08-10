@@ -59,10 +59,7 @@ fn process_message(bytes: &[u8], sender: Option<&mut Sender>) -> anyhow::Result<
             if let Some(s) = sender {
                 db::persist_lob(s, inst_id, lob).context("failed to persist lob levels")?;
             }
-            log::info!(
-                "{topic}: lob {level_count} levels (ts={})",
-                lob.ts
-            );
+            log::info!("{topic}: lob {level_count} levels (ts={})", lob.ts);
         }
         (MarketDataItem::Trade(trade), "trade") => {
             if let Some(s) = sender {
@@ -77,10 +74,7 @@ fn process_message(bytes: &[u8], sender: Option<&mut Sender>) -> anyhow::Result<
             );
         }
         _ => {
-            log::warn!(
-                "[forwarder] topic/item kind mismatch: {topic} → {}",
-                item_kind(&item)
-            );
+            log::warn!("topic/item kind mismatch: {topic} → {}", item_kind(&item));
         }
     }
     Ok(())
@@ -101,19 +95,19 @@ fn receive_loop(
 ) {
     loop {
         if shutdown.load(Ordering::Relaxed) {
-            log::info!("[forwarder] shutdown requested, stopping receive loop");
+            log::info!("shutdown requested, stopping receive loop");
             break;
         }
 
         match sub_socket.recv() {
             Ok(message) => {
                 if let Err(e) = process_message(message.as_slice(), sender.as_mut()) {
-                    log::error!("[forwarder] processing error: {e}");
+                    log::error!("processing error: {e}");
                 }
             }
             Err(nng::Error::TimedOut) => continue,
             Err(e) => {
-                log::warn!("[forwarder] NNG recv error: {e}");
+                log::warn!("NNG recv error: {e}");
                 thread::sleep(Duration::from_millis(500));
             }
         }
