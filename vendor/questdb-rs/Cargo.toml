@@ -1,0 +1,173 @@
+[package]
+name = "questdb-rs"
+version = "7.0.0"
+edition = "2024"
+rust-version = "1.91.1"
+license = "Apache-2.0"
+description = "QuestDB Client Library for Rust"
+homepage = "https://questdb.com/"
+repository = "https://github.com/questdb/c-questdb-client"
+keywords = ["questdb", "ilp", "client-library"]
+categories = ["database"]
+authors = ["Vlad Ilyushchenko <vlad@questdb.com>"]
+
+[lib]
+name = "questdb"
+crate-type = ["lib"]
+
+[dependencies]
+libc = "0.2"
+socket2 = { version = "0.6.1", optional = true }
+dns-lookup = "3.0.0"
+base64ct = { version = "1.7", features = ["alloc"] }
+ryu = { version = "1.0" }
+itoa = "1.0"
+bytes = { version = "1.7", optional = true }
+log = "0.4"
+aws-lc-rs = { version = "1.13", optional = true }
+ring = { version = "0.17.14", optional = true }
+rustls-pki-types = "1.12.0"
+rustls = { version = "0.23.25", default-features = false, features = ["logging", "std", "tls12"] }
+rustls-native-certs = { version = "0.8.2", optional = true }
+webpki-roots = { version = "1.0.3", default-features = false, optional = true }
+chrono = { version = "0.4.40", optional = true }
+ureq = { version = "3.1.2, <3.2.0", default-features = false, optional = true }
+serde_json = { version = "1", optional = true }
+questdb-confstr = "0.1.1"
+rand = { version = "0.9.0", optional = true }
+ndarray = { version = "0.16", optional = true }
+rust_decimal = { version = "1.38.0", optional = true }
+bigdecimal = { version = "0.4.8", optional = true }
+crc32c = "0.6"
+memmap2 = "0.9"
+jks = { version = "0.3", default-features = false, optional = true }
+p12-keystore = { version = "0.2", optional = true }
+zstd = { version = "0.13", optional = true }
+arrow = { version = ">=58, <60", optional = true, default-features = false, features = ["ffi"] }
+aligned-vec = { version = "0.6", optional = true }
+polars = { version = ">=0.52, <0.55", optional = true, default-features = false, features = ["dtype-categorical", "dtype-datetime", "dtype-date", "timezones"] }
+polars-arrow = { version = ">=0.52, <0.55", optional = true, default-features = false, features = ["compute"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.60", features = [
+    "Win32_Foundation",
+    "Win32_Networking_WinSock",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+    "Win32_System_Threading",
+] }
+
+[build-dependencies]
+serde_json = { version = "1.0.108" }
+serde = { version = "1.0.193", features = ["derive"] }
+slugify = "0.1.0"
+indoc = "2"
+
+[features]
+default = ["sync-sender", "sync-reader", "tls-webpki-certs", "ring-crypto"]
+
+sync-sender = [
+    "sync-sender-tcp",
+    "sync-sender-http",
+    "sync-sender-qwp-ws",
+]
+
+sync-reader = [
+    "sync-reader-qwp-ws",
+    "sync-reader-zstd",
+]
+
+sync-sender-tcp = ["_sync-sender", "_sender-tcp", "dep:socket2"]
+
+sync-sender-http = [
+    "_sync-sender",
+    "_sender-http",
+    "dep:ureq",
+    "dep:serde_json",
+    "dep:rand",
+]
+
+sync-sender-qwp-udp = ["_sync-sender", "_sender-qwp-udp", "dep:socket2"]
+
+sync-sender-qwp-ws = ["_sync-sender", "_sender-qwp-ws", "dep:rand", "dep:socket2", "_keystore-roots"]
+
+tls-native-certs = ["dep:rustls-native-certs"]
+
+tls-webpki-certs = ["dep:webpki-roots"]
+
+aws-lc-crypto = [
+    "dep:aws-lc-rs",
+    "rustls/aws-lc-rs",
+]
+
+ring-crypto = [
+    "dep:ring",
+    "rustls/ring",
+]
+
+insecure-skip-verify = []
+
+tls-key-log = []
+
+json-tests = ["bigdecimal"]
+
+chrono-timestamp = ["dep:chrono"]
+
+ndarray = ["dep:ndarray"]
+
+rust_decimal = ["dep:rust_decimal"]
+
+bigdecimal = ["dep:bigdecimal"]
+
+sync-reader-qwp-ws = ["_egress", "_keystore-roots"]
+
+sync-reader-zstd = ["_egress", "dep:zstd"]
+
+arrow-egress = ["_arrow", "sync-reader-qwp-ws", "arrow?/chrono-tz"]
+arrow-ingress = ["_arrow", "sync-sender-qwp-ws"]
+arrow = ["arrow-ingress", "arrow-egress"]
+
+polars-egress = ["_polars", "arrow-egress"]
+polars-ingress = ["_polars", "arrow-ingress"]
+polars = ["polars-ingress", "polars-egress"]
+
+live-server-tests = [
+    "sync-reader-qwp-ws",
+    "sync-reader-zstd",
+    "sync-sender-http",
+    "sync-sender-qwp-ws",
+]
+
+ffi-support = ["sync-sender-qwp-ws"]
+
+_sender-tcp = []
+_sender-http = []
+_sender-qwp-udp = []
+_sender-qwp-ws = []
+_sync-sender = []
+_egress = ["dep:bytes"]
+_keystore-roots = ["dep:jks", "dep:p12-keystore"]
+_arrow = ["dep:arrow", "dep:aligned-vec", "dep:bytes"]
+_polars = ["dep:polars", "dep:polars-arrow"]
+
+almost-all-features = [
+    "sync-sender",
+    "sync-sender-qwp-udp",
+    "sync-reader-qwp-ws",
+    "sync-reader-zstd",
+    "tls-webpki-certs",
+    "tls-native-certs",
+    "ring-crypto",
+    "insecure-skip-verify",
+    "json-tests",
+    "chrono-timestamp",
+    "ndarray",
+    "rust_decimal",
+    "bigdecimal",
+]
+
+[profile.dev.package."*"]
+debug = false
+
+[profile.test.package."*"]
+debug = false

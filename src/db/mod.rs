@@ -7,10 +7,9 @@
 use crate::items::{LobItem, TradeItem};
 use crate::migrate::{Migration, QuestDbMigrator};
 use anyhow::Result;
-use questdb::ingress::{Buffer, Sender, TimestampNanos};
-use reqwest::Client;
-use std::env;
-use std::time::Duration;
+use questdb::BorrowedSender;
+pub use questdb::QuestDb;
+use questdb::ingress::{Buffer, TimestampNanos};
 
 const MIGRATIONS: &[Migration] = &[
     Migration {
@@ -26,7 +25,7 @@ const MIGRATIONS: &[Migration] = &[
 ];
 
 /// Default QuestDB connection-conf string (QDB_CLIENT_CONF format).
-pub const DEFAULT_QDB_CONF: &str = "http::addr=localhost:9000;username=admin;password=quest;";
+pub const DEFAULT_QDB_CONF: &str = "ws::addr=localhost:9000;username=admin;password=quest;";
 
 /// Resolve the QuestDB configuration string.
 /// Priority: CLI arg > `QDB_CLIENT_CONF` env var > hardcoded default.
@@ -34,38 +33,25 @@ pub fn resolve_questdb_conf(cli_conf: Option<&str>) -> String {
     if let Some(conf) = cli_conf {
         return conf.to_string();
     }
-    if let Ok(env_conf) = env::var("QDB_CLIENT_CONF") {
+    if let Ok(env_conf) = std::env::var("QDB_CLIENT_CONF") {
         return env_conf;
     }
     DEFAULT_QDB_CONF.to_string()
 }
 
-fn extract_http_addr(conf_str: &str) -> String {
-    for part in conf_str.split(';') {
-        if let Some(stripped) = part.strip_prefix("http::addr=") {
-            return stripped.to_string();
-        }
-        if let Some(stripped) = part.strip_prefix("https::addr=") {
-            return stripped.to_string();
-        }
-    }
-    "localhost:9000".to_string()
-}
-
-/// Create a QuestDB [`Sender`] from a `QDB_CLIENT_CONF` formatted string.
-pub async fn connect(conf_str: &str) -> Result<Sender> {
+/// Create a QuestDB [`QuestDb`] pool from a `QDB_CLIENT_CONF` formatted string.
+pub async fn connect(conf_str: &str) -> Result<QuestDb> {
     let conf = if conf_str.is_empty() {
         DEFAULT_QDB_CONF
     } else {
         conf_str
     };
-    Ok(Sender::from_conf(conf)?)
+    Ok(QuestDb::connect(conf)?)
 }
 
-/// Run embedded SQL migrations against QuestDB via its HTTP REST API.
-pub async fn run_migrations(conf_str: &str) -> Result<()> {
-    let http_addr = extract_http_addr(conf_str);
-    let migrator = QuestDbMigrator::new(&http_addr);
+/// Run embedded SQL migrations against QuestDB via QWP/WebSocket.
+pub async fn run_migrations(db: &QuestDb) -> Result<()> {
+    let migrator = QuestDbMigrator::new(db);
     migrator
         .run_migrations(MIGRATIONS)
         .await
@@ -74,36 +60,27 @@ pub async fn run_migrations(conf_str: &str) -> Result<()> {
 }
 
 /// Set QuestDB TTL for `trades` and `lob_levels`.
-pub async fn apply_ttl(ttl_hours: u64, questdb_conf: &str) -> Result<()> {
+pub async fn apply_ttl(ttl_hours: u64, db: &QuestDb) -> Result<()> {
     if ttl_hours == 0 {
         return Ok(());
     }
-    let http_addr = extract_http_addr(questdb_conf);
-    let client = Client::builder().timeout(Duration::from_secs(10)).build()?;
 
     for table in &["lob_levels", "trades"] {
         let sql = format!("ALTER TABLE {} SET TTL {} HOURS", table, ttl_hours);
-        let url = format!(
-            "http://{}/exec?query={}",
-            http_addr,
-            urlencoding::encode(&sql)
-        );
-        match client.get(&url).send().await {
-            Ok(resp) if resp.status().is_success() => {}
-            Ok(resp) => {
-                let text = resp.text().await.unwrap_or_default();
-                log::warn!("[ttl] table {table}: {text}");
-            }
-            Err(e) => {
-                log::warn!("[ttl] table {table}: {e}");
-            }
-        }
+        let mut reader = db
+            .borrow_reader()
+            .map_err(|e| anyhow::anyhow!("failed to borrow reader: {e}"))?;
+        let mut cursor = reader
+            .execute(&sql)
+            .map_err(|e| anyhow::anyhow!("TTL query failed for {table}: {e}"))?;
+        while cursor.next_batch()?.is_some() {}
+        log::info!("[ttl] table {table}: TTL set to {ttl_hours} hours");
     }
     Ok(())
 }
 
 /// Persist a single trade row to QuestDB.
-pub fn persist_trade(sender: &mut Sender, inst_id: &str, trade: &TradeItem) -> Result<()> {
+pub fn persist_trade(sender: &mut BorrowedSender, inst_id: &str, trade: &TradeItem) -> Result<()> {
     let mut buffer = sender.new_buffer();
     let timestamp_nanos = (trade.ts as i64) * 1_000_000;
     let trade_id = trade.trade_id.as_deref().unwrap_or("");
@@ -123,7 +100,7 @@ pub fn persist_trade(sender: &mut Sender, inst_id: &str, trade: &TradeItem) -> R
         .column_f64("sz", trade.size)?
         .column_i64("seq_id", seq_id)?
         .at(TimestampNanos::new(timestamp_nanos))?;
-    sender.flush(&mut buffer)?;
+    sender.flush_buffer(&mut buffer)?;
     Ok(())
 }
 
@@ -166,7 +143,7 @@ pub fn compute_best_diff(side: &str, best: Option<f64>, price: f64) -> f64 {
 /// `best_bid` is the top bid price; `best_ask` the top ask price.
 /// For bid levels `best_diff = best_bid - price`; for ask levels
 /// `best_diff = price - best_ask`.
-pub fn persist_lob(sender: &mut Sender, inst_id: &str, lob: &LobItem) -> Result<()> {
+pub fn persist_lob(sender: &mut BorrowedSender, inst_id: &str, lob: &LobItem) -> Result<()> {
     let best_bid = lob.bids.first().map(|l| l.price);
     let best_ask = lob.asks.first().map(|l| l.price);
     let timestamp_nanos = (lob.ts as i64) * 1_000_000;
@@ -198,7 +175,7 @@ pub fn persist_lob(sender: &mut Sender, inst_id: &str, lob: &LobItem) -> Result<
             best_diff,
         )?;
     }
-    sender.flush(&mut buffer)?;
+    sender.flush_buffer(&mut buffer)?;
     Ok(())
 }
 
@@ -207,47 +184,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn extract_http_addr_from_conf() {
-        assert_eq!(
-            extract_http_addr("http::addr=localhost:9000;username=admin;password=quest;"),
-            "localhost:9000"
-        );
-        assert_eq!(
-            extract_http_addr("username=admin;password=quest;"),
-            "localhost:9000"
-        );
-    }
-
-    #[test]
     fn resolve_questdb_conf_cli_overrides_env() {
-        let result = resolve_questdb_conf(Some("http::addr=custom:9009;"));
-        assert_eq!(result, "http::addr=custom:9009;");
+        let result = resolve_questdb_conf(Some("ws::addr=custom:9009;"));
+        assert_eq!(result, "ws::addr=custom:9009;");
     }
 
     #[test]
     fn compute_best_diff_for_bid_and_ask() {
-        // best_bid = 100.0, best_ask = 101.0
         let best_bid = Some(100.0);
         let best_ask = Some(101.0);
 
-        // bid best_diff = best_bid - price
         assert!((compute_best_diff("bid", best_bid, 100.0) - 0.0).abs() < 1e-9);
         assert!((compute_best_diff("bid", best_bid, 99.0) - 1.0).abs() < 1e-9);
 
-        // ask best_diff = price - best_ask
         assert!((compute_best_diff("ask", best_ask, 101.0) - 0.0).abs() < 1e-9);
         assert!((compute_best_diff("ask", best_ask, 102.0) - 1.0).abs() < 1e-9);
 
-        // no best price → 0.0
         assert_eq!(compute_best_diff("bid", None, 98.0), 0.0);
         assert_eq!(compute_best_diff("ask", None, 103.0), 0.0);
 
-        // unknown side → 0.0
         assert_eq!(compute_best_diff("neutral", best_bid, 100.0), 0.0);
-    }
-
-    #[test]
-    fn extract_http_addr_extracts_from_https_conf() {
-        assert_eq!(extract_http_addr("https::addr=secure:9000;"), "secure:9000");
     }
 }

@@ -27,7 +27,7 @@ This file describes conventions and workflows for AI agents working on
 │   ├── subscriber.rs       # NNG SUB socket wrapper
 │   ├── db/mod.rs           # QuestDB connection + persistence helpers
 │   ├── db/migrations/      # embedded SQL migration files
-│   ├── migrate.rs          # schema-versioned migration runner (HTTP REST)
+│   ├── migrate.rs          # schema-versioned migration runner (QWP/WebSocket)
 │   └── logging.rs          # env_logger initializer (init())
 └── tests/                  # integration tests (currently empty)
 ```
@@ -39,8 +39,8 @@ This file describes conventions and workflows for AI agents working on
 | `forward`     | Wire format: split / parse / frame messages |
 | `items`       | Serde types for LOB and trade payloads      |
 | `subscriber`  | NNG SUB socket lifecycle + topic filtering  |
-| `db`          | QuestDB ILP persistence + config resolution |
-| `migrate`     | Migration tracking via `schema_version`     |
+| `db`          | QuestDB QWP/WebSocket persistence + config resolution |
+| `migrate`     | Migration tracking via `schema_version` table         |
 | `logging`     | env_logger initializer (`init()`)             |
 
 ## Conventions
@@ -60,7 +60,7 @@ This file describes conventions and workflows for AI agents working on
 * No comments in source code — express intent via names; document decisions in
   ADRs or commit messages.
 * Use `anyhow::Result` at the application layer (CLI / persistence boundary).
-* Internal modules may return `Result<T, String>` for migration HTTP errors.
+* Internal modules may return `Result<T, String>` for migration QWP errors.
 * Prefer `clap::Parser` derive for CLI arguments (see `main.rs` `Cli` struct).
 * Use `log` / `env_logger` for logging. Initialize via `logging::init()` in `main()`.
   All logging uses `log::info!`, `log::warn!`, `log::error!`, `log::debug!` with
@@ -71,6 +71,13 @@ This file describes conventions and workflows for AI agents working on
 * Crate / lib: `cryptomeria_historic` (snake_case lib name)
 * Binary: `cryptomeria-historic` (kebab-case bin name)
 * Topic prefixes: `lob__` / `trade__` (double underscore)
+
+### Transport
+
+* QuestDB connections use QWP/WebSocket (QuestDB 10+) via `questdb-rs` v7.
+  The config string must use `ws::addr=`; ILP (`http::addr=`) is not supported.
+* Migrations and TTL execute via `BorrowedReader::execute` over QWP/WebSocket
+  (replacing the previous `reqwest` HTTP REST API).
 
 ### Paths
 

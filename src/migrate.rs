@@ -1,12 +1,12 @@
 //! Lightweight schema-versioned migration runner for QuestDB.
 //!
 //! Tracks applied migrations in a `schema_version` table and applies embedded
-//! SQL files in version order via QuestDB's HTTP REST endpoint.
+//! SQL files in version order via `BorrowedReader::execute` over QWP/WebSocket.
 
 use chrono::Utc;
-use reqwest::Client;
+use questdb::QuestDb;
+use questdb::egress::ColumnView;
 use std::collections::HashMap;
-use std::time::Duration;
 
 const SCHEMA_VERSION_DDL: &str =
     "CREATE TABLE IF NOT EXISTS schema_version (version INT, name STRING, applied_on STRING)";
@@ -24,83 +24,59 @@ struct AppliedMigration {
     name: String,
 }
 
-/// Runs SQL migrations against QuestDB over HTTP.
-pub struct QuestDbMigrator {
-    client: Client,
-    http_addr: String,
+/// Runs SQL migrations against QuestDB over QWP/WebSocket.
+pub struct QuestDbMigrator<'a> {
+    db: &'a QuestDb,
 }
 
-impl QuestDbMigrator {
-    pub fn new(http_addr: &str) -> Self {
-        let client = Client::builder()
-            .timeout(Duration::from_secs(10))
-            .build()
-            .expect("reqwest client should build");
-        QuestDbMigrator {
-            client,
-            http_addr: http_addr.to_string(),
-        }
+impl<'a> QuestDbMigrator<'a> {
+    pub fn new(db: &'a QuestDb) -> Self {
+        QuestDbMigrator { db }
     }
 
-    async fn execute_sql(&self, sql: &str) -> Result<(), String> {
-        let url = format!(
-            "http://{}/exec?query={}",
-            self.http_addr,
-            urlencoding::encode(sql)
-        );
-        let response = self
-            .client
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| e.to_string())?;
-        if !response.status().is_success() {
-            let text = response.text().await.map_err(|e| e.to_string())?;
-            return Err(format!("QuestDB SQL error: {}", text));
-        }
+    fn run_sql(&self, sql: &str) -> Result<(), String> {
+        let mut reader = self
+            .db
+            .borrow_reader()
+            .map_err(|e| format!("borrow reader error: {e}"))?;
+        let mut cursor = reader
+            .execute(sql)
+            .map_err(|e| format!("execute error: {e}"))?;
+        while cursor
+            .next_batch()
+            .map_err(|e| format!("cursor error: {e}"))?
+            .is_some()
+        {}
         Ok(())
     }
 
-    async fn query_json(&self, sql: &str) -> Result<serde_json::Value, String> {
-        let url = format!(
-            "http://{}/exec?query={}",
-            self.http_addr,
-            urlencoding::encode(sql)
-        );
-        let response = self
-            .client
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| e.to_string())?;
-        if !response.status().is_success() {
-            let text = response.text().await.map_err(|e| e.to_string())?;
-            return Err(format!("QuestDB SQL error: {}", text));
-        }
-        let body = response.text().await.map_err(|e| e.to_string())?;
-        serde_json::from_str(&body).map_err(|e| format!("JSON parse error: {e}"))
-    }
+    fn list_applied(&self) -> Result<Vec<AppliedMigration>, String> {
+        self.run_sql(SCHEMA_VERSION_DDL)?;
+        let mut reader = self
+            .db
+            .borrow_reader()
+            .map_err(|e| format!("borrow reader error: {e}"))?;
+        let mut cursor = reader
+            .execute("SELECT version, name FROM schema_version ORDER BY version ASC")
+            .map_err(|e| format!("execute error: {e}"))?;
 
-    async fn ensure_schema_version_table(&self) -> Result<(), String> {
-        self.execute_sql(SCHEMA_VERSION_DDL).await
-    }
+        let mut applied = Vec::new();
+        while let Some(batch) = cursor
+            .next_batch()
+            .map_err(|e| format!("next_batch error: {e}"))?
+        {
+            let version_col = batch.column(0).map_err(|e| format!("column error: {e}"))?;
+            let name_col = batch.column(1).map_err(|e| format!("column error: {e}"))?;
 
-    async fn list_applied(&self) -> Result<Vec<AppliedMigration>, String> {
-        if self.execute_sql(SCHEMA_VERSION_DDL).await.is_err() {
-            return Ok(Vec::new());
-        }
-        let json = self
-            .query_json("SELECT version, name FROM schema_version ORDER BY version ASC")
-            .await?;
-        let dataset = json["dataset"].as_array().cloned().unwrap_or_default();
-        let mut applied = Vec::with_capacity(dataset.len());
-        for row in &dataset {
-            let parts = row.as_array().cloned().unwrap_or_default();
-            if parts.len() < 2 {
-                continue;
-            }
-            let version = parts[0].as_i64().unwrap_or(0) as i32;
-            let name = parts[1].as_str().unwrap_or("").to_string();
+            let version = match &version_col {
+                ColumnView::Int(col) => col.value(0),
+                _ => 0,
+            };
+            let name = match &name_col {
+                ColumnView::Varchar(col) => col.value(0).unwrap_or("").to_string(),
+                ColumnView::Symbol(col) => col.resolve(0).unwrap_or("").to_string(),
+                _ => String::new(),
+            };
             applied.push(AppliedMigration { version, name });
         }
         Ok(applied)
@@ -108,8 +84,8 @@ impl QuestDbMigrator {
 
     /// Run all migrations from `migrations` that have not yet been applied.
     pub async fn run_migrations(&self, migrations: &[Migration]) -> Result<(), String> {
-        self.ensure_schema_version_table().await?;
-        let applied = self.list_applied().await?;
+        self.run_sql(SCHEMA_VERSION_DDL)?;
+        let applied = self.list_applied()?;
         let applied_map: HashMap<i32, &AppliedMigration> =
             applied.iter().map(|m| (m.version, m)).collect();
 
@@ -127,8 +103,7 @@ impl QuestDbMigrator {
                 continue;
             }
             log::info!("[migrate] Applying V{}__{}...", version, migration.name);
-            self.execute_sql(migration.sql)
-                .await
+            self.run_sql(migration.sql)
                 .map_err(|e| format!("Migration V{}__{} failed: {e}", version, migration.name))?;
             let insert_sql = format!(
                 "INSERT INTO schema_version (version, name, applied_on) VALUES ({}, '{}', '{}')",
@@ -136,8 +111,7 @@ impl QuestDbMigrator {
                 migration.name.replace('\'', "''"),
                 Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ")
             );
-            self.execute_sql(&insert_sql)
-                .await
+            self.run_sql(&insert_sql)
                 .map_err(|e| format!("Failed to record V{}__{}: {e}", version, migration.name))?;
             log::info!("[migrate] V{}__{} applied", version, migration.name);
         }
