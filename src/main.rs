@@ -18,6 +18,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 
+const RECV_TIMEOUT_WARN_INTERVAL_SECS: u64 = 5;
+
 /// CLI options.
 #[derive(Parser, Clone)]
 #[command(
@@ -93,6 +95,8 @@ fn receive_loop(
     mut sender: Option<Sender>,
     shutdown: Arc<AtomicBool>,
 ) {
+    let mut last_timeout_warn = std::time::Instant::now();
+
     loop {
         if shutdown.load(Ordering::Relaxed) {
             log::info!("shutdown requested, stopping receive loop");
@@ -101,11 +105,21 @@ fn receive_loop(
 
         match sub_socket.recv() {
             Ok(message) => {
+                last_timeout_warn = std::time::Instant::now();
                 if let Err(e) = process_message(message.as_slice(), sender.as_mut()) {
                     log::error!("processing error: {e}");
                 }
             }
-            Err(nng::Error::TimedOut) => continue,
+            Err(nng::Error::TimedOut) => {
+                if last_timeout_warn.elapsed().as_secs() >= RECV_TIMEOUT_WARN_INTERVAL_SECS {
+                    log::warn!(
+                        "no messages received in {}s — NNG broker may be down",
+                        last_timeout_warn.elapsed().as_secs()
+                    );
+                    last_timeout_warn = std::time::Instant::now();
+                }
+                continue;
+            }
             Err(e) => {
                 log::warn!("NNG recv error: {e}");
                 thread::sleep(Duration::from_millis(500));
