@@ -9,19 +9,19 @@ embedded schema migrations.
 [`cryptomeria-marketdata`](https://github.com/fibonsai/cryptomeria-marketdata)),
 receives framed `{topic}\0{json-payload}` messages, deserialises them into
 normalised `MarketDataItem` values, and writes LOB levels and trades into QuestDB
-via the ILP line protocol.
+via the QWP/WebSocket protocol (QuestDB 10+).
 
 ### Architecture
 
 ```
-cryptomeria-marketdata ──NNG PUB──► cryptomeria-historic ──ILP──► QuestDB
+cryptomeria-marketdata ──NNG PUB──► cryptomeria-historic ──QWP/WS──► QuestDB
 ```
 
 * **NNG subscriber thread** — blocking receive loop on a dedicated thread; filters
   by topic prefix (`lob__`, `trade__`) and parses wire frames.
-* **QuestDB writer** — persists rows via `questdb-rs` ILP sender.
-* **Migration runner** — executes embedded SQL migrations on startup via the
-  QuestDB HTTP REST API, tracking applied versions in a `schema_version` table.
+* **QuestDB writer** — persists rows via `questdb-rs` QWP/WebSocket `BorrowedSender`.
+* **Migration runner** — executes embedded SQL migrations on startup via `BorrowedReader::execute`
+  over QWP/WebSocket, tracking applied versions in a `schema_version` table.
 
 ### Wire format
 
@@ -45,7 +45,7 @@ Each NNG message is `{topic}\0{payload}` where:
 ### Prerequisites
 
 * Rust 2024 edition toolchain
-* QuestDB running and reachable (default: `http://localhost:9000`)
+* QuestDB running and reachable (default: `ws://localhost:9000`)
 * NNG PUB broker (from `cryptomeria-marketdata`) running (default: `tcp://127.0.0.1:14242`)
 
 ### Build
@@ -66,7 +66,7 @@ cargo run -- --dry-run
 # Custom NNG and QuestDB addresses:
 cargo run -- \
   --nng-addr tcp://127.0.0.1:14242 \
-  --qdb-conf "http::addr=questdb:9000;username=admin;password=quest;"
+  --qdb-conf "ws::addr=questdb:9000;username=admin;password=quest;"
 
 # Auto-exit after 30 seconds (useful for CI):
 cargo run -- --test-timeout-secs 30
@@ -80,7 +80,7 @@ cargo run -- --ttl-hours 24
 | Flag                | Default                  | Description                                      |
 |---------------------|--------------------------|--------------------------------------------------|
 | `--nng-addr`        | `tcp://127.0.0.1:14242`  | NNG PUB broker address to subscribe to           |
-| `--qdb-conf`        | env `QDB_CLIENT_CONF`    | QuestDB connection-conf string                   |
+| `--qdb-conf`        | env `QDB_CLIENT_CONF`    | QuestDB conn-conf string (e.g. `ws::addr=localhost:9000`)  |
 | `--ttl-hours`       | _none_                   | Override QuestDB table TTL (applied on startup)  |
 | `--dry-run`         | _off_                    | Receive and log only; do not persist to QuestDB  |
 | `--test-timeout-secs` | `0`                    | Exit after N seconds (`0` = run indefinitely)     |
@@ -110,6 +110,8 @@ cargo run -- --ttl-hours 24
 * Edition 2024, `cargo clippy -D warnings` clean.
 * No comments in code — intent expressed via names; decisions in ADRs.
 * Relative paths only.
+* QuestDB transport is QWP/WebSocket only (`ws::addr=`) — ILP (`http::addr=`)
+  is not supported.
 * Secrets in `.env.local` only (never committed).
 * See [CONTRIBUTING.md](CONTRIBUTING.md) for full guidelines.
 
@@ -144,7 +146,7 @@ cargo run -- --ttl-hours 24
 
 | Variable          | Description                                      |
 |-------------------|--------------------------------------------------|
-| `QDB_CLIENT_CONF` | QuestDB connection-conf string (fallback for `--qdb-conf`) |
+| `QDB_CLIENT_CONF` | QuestDB connection-conf string (e.g. `ws::addr=localhost:9000;`) (fallback for `--qdb-conf`) |
 | `RUST_LOG`        | Log level (`info`, `debug`, `warn`, `error`; default: `info`) |
 
 ## License

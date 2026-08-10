@@ -3,16 +3,17 @@
 //! Connects to an external NNG PUB socket (run by `cryptomeria-marketdata`),
 //! receives framed `{topic}\0{json-payload}` messages, deserialises them into
 //! normalised `MarketDataItem` values, and writes LOB levels / trades into
-//! QuestDB via ILP with embedded schema-versioned migrations.
+//! QuestDB via QWP/WebSocket with embedded schema-versioned migrations.
 
 use anyhow::{Context, Result, anyhow};
 use clap::Parser;
+use cryptomeria_historic::QuestDb;
 use cryptomeria_historic::db;
 use cryptomeria_historic::forward;
 use cryptomeria_historic::items::MarketDataItem;
 use cryptomeria_historic::logging;
 use cryptomeria_historic::subscriber;
-use questdb::ingress::Sender;
+use questdb::BorrowedSender;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
@@ -31,7 +32,8 @@ struct Cli {
     #[arg(long, default_value = "tcp://127.0.0.1:14242")]
     nng_addr: String,
 
-    /// QuestDB connection-conf string. Overrides the `QDB_CLIENT_CONF` env var.
+    /// QuestDB connection-conf string (QDB_CLIENT_CONF format).
+    /// Example: `ws::addr=localhost:9000;username=admin;password=quest;`
     #[arg(long)]
     qdb_conf: Option<String>,
 
@@ -49,7 +51,11 @@ struct Cli {
 }
 
 /// Process a single NNG wire message: split frame, classify topic, persist.
-fn process_message(bytes: &[u8], sender: Option<&mut Sender>, dry_run: bool) -> anyhow::Result<()> {
+fn process_message(
+    bytes: &[u8],
+    sender: Option<&mut BorrowedSender>,
+    dry_run: bool,
+) -> anyhow::Result<()> {
     let (topic, item) =
         forward::parse_frame(bytes).with_context(|| "failed to parse wire frame")?;
     let (kind, inst_id) =
@@ -96,10 +102,15 @@ fn item_kind(item: &MarketDataItem) -> &'static str {
 /// Blocking receive loop running on a dedicated thread.
 fn receive_loop(
     sub_socket: subscriber::NngSubscriber,
-    mut sender: Option<Sender>,
+    questdb: Option<Arc<QuestDb>>,
     shutdown: Arc<AtomicBool>,
     dry_run: bool,
 ) {
+    let mut sender: Option<BorrowedSender> = questdb.as_ref().map(|db| {
+        db.borrow_sender()
+            .expect("failed to borrow sender from QuestDB pool")
+    });
+
     let mut last_timeout_warn = std::time::Instant::now();
 
     loop {
@@ -143,29 +154,29 @@ async fn main() -> Result<()> {
     log::info!("[system] NNG broker: {}", cli.nng_addr);
     log::info!("[system] QuestDB conf: {}", qdb_conf);
 
-    // Run migrations before connecting the ILP sender.
-    db::run_migrations(&qdb_conf)
-        .await
-        .context("migration failed")?;
-
-    // Optional TTL override.
-    if let Some(ttl) = cli.ttl_hours {
-        db::apply_ttl(ttl, &qdb_conf)
-            .await
-            .context("TTL application failed")?;
-    }
-
-    // Connect QuestDB ILP sender (skip in dry-run).
-    let sender: Option<Sender> = if cli.dry_run {
-        log::info!("[system] dry-run mode: QuestDB sender not connected");
+    // Connect QuestDB pool (skip in dry-run).
+    let questdb: Option<Arc<QuestDb>> = if cli.dry_run {
+        log::info!("[system] dry-run mode: QuestDB not connected");
         None
     } else {
-        let s = db::connect(&qdb_conf)
+        let qdb = db::connect(&qdb_conf)
             .await
             .context("failed to connect to QuestDB")?;
         log::info!("[system] connected to QuestDB");
-        Some(s)
+        Some(Arc::new(qdb))
     };
+
+    // Run migrations before starting the receive loop.
+    if let Some(ref qdb) = questdb {
+        db::run_migrations(qdb).await.context("migration failed")?;
+    }
+
+    // Optional TTL override.
+    if let (Some(ttl), Some(qdb)) = (cli.ttl_hours, &questdb) {
+        db::apply_ttl(ttl, qdb)
+            .await
+            .context("TTL application failed")?;
+    }
 
     // Connect NNG subscriber.
     let sub_socket = subscriber::NngSubscriber::new(&cli.nng_addr)
@@ -176,7 +187,7 @@ async fn main() -> Result<()> {
     let shutdown = Arc::new(AtomicBool::new(false));
     let shutdown_loop = Arc::clone(&shutdown);
     let handle =
-        thread::spawn(move || receive_loop(sub_socket, sender, shutdown_loop, cli.dry_run));
+        thread::spawn(move || receive_loop(sub_socket, questdb, shutdown_loop, cli.dry_run));
     log::info!("[system] forwarder running (Ctrl+C to stop)");
 
     // Wait for shutdown signal.
@@ -217,6 +228,20 @@ mod tests {
         assert!(!cli.dry_run);
         assert_eq!(cli.ttl_hours, None);
         assert_eq!(cli.test_timeout_secs, 0);
+    }
+
+    #[test]
+    fn cli_accepts_ws_qdb_conf() {
+        let cli = Cli::try_parse_from([
+            "cryptomeria-historic",
+            "--qdb-conf",
+            "ws::addr=localhost:9000;username=admin;password=quest;",
+        ])
+        .unwrap();
+        assert_eq!(
+            cli.qdb_conf,
+            Some("ws::addr=localhost:9000;username=admin;password=quest;".to_string())
+        );
     }
 
     #[test]
