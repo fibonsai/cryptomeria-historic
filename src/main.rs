@@ -59,8 +59,8 @@ fn process_message(bytes: &[u8], sender: Option<&mut Sender>) -> anyhow::Result<
             if let Some(s) = sender {
                 db::persist_lob(s, inst_id, lob).context("failed to persist lob levels")?;
             }
-            log::debug!(
-                "[forwarder] {topic}: lob {level_count} levels (ts={})",
+            log::info!(
+                "{topic}: lob {level_count} levels (ts={})",
                 lob.ts
             );
         }
@@ -69,7 +69,7 @@ fn process_message(bytes: &[u8], sender: Option<&mut Sender>) -> anyhow::Result<
                 db::persist_trade(s, inst_id, trade).context("failed to persist trade")?;
             }
             log::info!(
-                "[forwarder] {topic}: trade px={} sz={} side={} (ts={})",
+                "{topic}: trade px={} sz={} side={} (ts={})",
                 trade.price,
                 trade.size,
                 trade.side,
