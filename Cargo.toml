@@ -1,0 +1,37 @@
+[package]
+name = "cryptomeria-historic"
+version = "0.0.1"
+edition = "2024"
+description = "NNG PUB/SUB subscriber that forwards normalised LOB/trade market data to QuestDB with embedded schema migrations."
+license = "Apache-2.0"
+repository = "https://github.com/fibonsai/cryptomeria-historic"
+categories = ["command-line-utilities", "database"]
+keywords = ["crypto", "market-data", "historical", "trading", "questdb", "nng"]
+
+[lib]
+name = "cryptomeria_historic"
+path = "src/lib.rs"
+
+[[bin]]
+name = "cryptomeria-historic"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+nng = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+questdb-rs = { version = "6", features = ["chrono_timestamp"] }
+clap = { version = "4", features = ["derive"] }
+rasant = "1.1"
+reqwest = { version = "0.13.4", features = ["json"] }
+urlencoding = "2.1.3"
+chrono = "0.4"
+anyhow = "1"
+
+[dev-dependencies]
+serial_test = "2"
+
+[profile.release]
+lto = true
+codegen-units = 1
