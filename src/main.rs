@@ -49,7 +49,7 @@ struct Cli {
 }
 
 /// Process a single NNG wire message: split frame, classify topic, persist.
-fn process_message(bytes: &[u8], sender: Option<&mut Sender>) -> anyhow::Result<()> {
+fn process_message(bytes: &[u8], sender: Option<&mut Sender>, dry_run: bool) -> anyhow::Result<()> {
     let (topic, item) =
         forward::parse_frame(bytes).with_context(|| "failed to parse wire frame")?;
     let (kind, inst_id) =
@@ -61,19 +61,23 @@ fn process_message(bytes: &[u8], sender: Option<&mut Sender>) -> anyhow::Result<
             if let Some(s) = sender {
                 db::persist_lob(s, inst_id, lob).context("failed to persist lob levels")?;
             }
-            log::info!("{topic}: lob {level_count} levels (ts={})", lob.ts);
+            if dry_run || log::log_enabled!(log::Level::Debug) {
+                log::info!("{topic}: lob {level_count} levels (ts={})", lob.ts);
+            }
         }
         (MarketDataItem::Trade(trade), "trade") => {
             if let Some(s) = sender {
                 db::persist_trade(s, inst_id, trade).context("failed to persist trade")?;
             }
-            log::info!(
-                "{topic}: trade px={} sz={} side={} (ts={})",
-                trade.price,
-                trade.size,
-                trade.side,
-                trade.ts
-            );
+            if dry_run || log::log_enabled!(log::Level::Debug) {
+                log::info!(
+                    "{topic}: trade px={} sz={} side={} (ts={})",
+                    trade.price,
+                    trade.size,
+                    trade.side,
+                    trade.ts
+                );
+            }
         }
         _ => {
             log::warn!("topic/item kind mismatch: {topic} → {}", item_kind(&item));
@@ -94,6 +98,7 @@ fn receive_loop(
     sub_socket: subscriber::NngSubscriber,
     mut sender: Option<Sender>,
     shutdown: Arc<AtomicBool>,
+    dry_run: bool,
 ) {
     let mut last_timeout_warn = std::time::Instant::now();
 
@@ -106,7 +111,7 @@ fn receive_loop(
         match sub_socket.recv() {
             Ok(message) => {
                 last_timeout_warn = std::time::Instant::now();
-                if let Err(e) = process_message(message.as_slice(), sender.as_mut()) {
+                if let Err(e) = process_message(message.as_slice(), sender.as_mut(), dry_run) {
                     log::error!("processing error: {e}");
                 }
             }
@@ -170,7 +175,8 @@ async fn main() -> Result<()> {
     // Spawn the blocking receive loop.
     let shutdown = Arc::new(AtomicBool::new(false));
     let shutdown_loop = Arc::clone(&shutdown);
-    let handle = thread::spawn(move || receive_loop(sub_socket, sender, shutdown_loop));
+    let handle =
+        thread::spawn(move || receive_loop(sub_socket, sender, shutdown_loop, cli.dry_run));
     log::info!("[system] forwarder running (Ctrl+C to stop)");
 
     // Wait for shutdown signal.
@@ -232,5 +238,28 @@ mod tests {
         });
         assert_eq!(item_kind(&lob), "lob");
         assert_eq!(item_kind(&trade), "trade");
+    }
+
+    fn lob_frame() -> Vec<u8> {
+        let json = r#"{"lob":{"ts":123,"exchange":"okx","bids":[{"p":100.0,"s":1.0}],"asks":[{"p":101.0,"s":2.0}]}}"#;
+        forward::frame_message("lob__btcusdt", json.as_bytes())
+    }
+
+    fn trade_frame() -> Vec<u8> {
+        let json =
+            r#"{"trade":{"ts":456,"exchange":"kraken","price":100.0,"size":1.5,"side":"buy"}}"#;
+        forward::frame_message("trade__btcusd", json.as_bytes())
+    }
+
+    #[test]
+    fn process_message_succeeds_in_dry_run_with_no_sender() {
+        process_message(&lob_frame(), None, true).unwrap();
+        process_message(&trade_frame(), None, true).unwrap();
+    }
+
+    #[test]
+    fn process_message_succeeds_not_dry_run_with_no_sender() {
+        process_message(&lob_frame(), None, false).unwrap();
+        process_message(&trade_frame(), None, false).unwrap();
     }
 }
