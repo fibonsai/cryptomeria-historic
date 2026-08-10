@@ -3,7 +3,6 @@
 //! Tracks applied migrations in a `schema_version` table and applies embedded
 //! SQL files in version order via QuestDB's HTTP REST endpoint.
 
-use crate::logging;
 use chrono::Utc;
 use reqwest::Client;
 use std::collections::HashMap;
@@ -118,20 +117,16 @@ impl QuestDbMigrator {
             let version = migration.version;
             if let Some(existing) = applied_map.get(&version) {
                 if existing.name != migration.name {
-                    logging::error(
-                        "migrate",
-                        &format!(
-                            "Divergent migration V{}: embedded name '{}' != applied name '{}'",
-                            version, migration.name, existing.name
-                        ),
+                    log::error!(
+                        "[migrate] Divergent migration V{}: embedded name '{}' != applied name '{}'",
+                        version,
+                        migration.name,
+                        existing.name
                     );
                 }
                 continue;
             }
-            logging::info(
-                "migrate",
-                &format!("Applying V{}__{}...", version, migration.name),
-            );
+            log::info!("[migrate] Applying V{}__{}...", version, migration.name);
             self.execute_sql(migration.sql)
                 .await
                 .map_err(|e| format!("Migration V{}__{} failed: {e}", version, migration.name))?;
@@ -144,10 +139,7 @@ impl QuestDbMigrator {
             self.execute_sql(&insert_sql)
                 .await
                 .map_err(|e| format!("Failed to record V{}__{}: {e}", version, migration.name))?;
-            logging::info(
-                "migrate",
-                &format!("V{}__{} applied", version, migration.name),
-            );
+            log::info!("[migrate] V{}__{} applied", version, migration.name);
         }
         Ok(())
     }

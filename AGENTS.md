@@ -28,7 +28,7 @@ This file describes conventions and workflows for AI agents working on
 │   ├── db/mod.rs           # QuestDB connection + persistence helpers
 │   ├── db/migrations/      # embedded SQL migration files
 │   ├── migrate.rs          # schema-versioned migration runner (HTTP REST)
-│   └── logging.rs          # rasant-based process-wide logger
+│   └── logging.rs          # env_logger initializer (init())
 └── tests/                  # integration tests (currently empty)
 ```
 
@@ -41,7 +41,7 @@ This file describes conventions and workflows for AI agents working on
 | `subscriber`  | NNG SUB socket lifecycle + topic filtering  |
 | `db`          | QuestDB ILP persistence + config resolution |
 | `migrate`     | Migration tracking via `schema_version`     |
-| `logging`     | Global rasant logger + category helpers     |
+| `logging`     | env_logger initializer (`init()`)             |
 
 ## Conventions
 
@@ -62,8 +62,9 @@ This file describes conventions and workflows for AI agents working on
 * Use `anyhow::Result` at the application layer (CLI / persistence boundary).
 * Internal modules may return `Result<T, String>` for migration HTTP errors.
 * Prefer `clap::Parser` derive for CLI arguments (see `main.rs` `Cli` struct).
-* Use `rasant` for logging, not `log`/`env_logger`. All logging goes through
-  `logging.rs` category helpers (`info`, `warn`, `error`, `debug`).
+* Use `log` / `env_logger` for logging. Initialize via `logging::init()` in `main()`.
+  All logging uses `log::info!`, `log::warn!`, `log::error!`, `log::debug!` with
+  the category embedded in the format string (e.g. `log::info!("[forwarder] ...")`).
 
 ### Naming
 
