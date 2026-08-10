@@ -65,6 +65,9 @@ impl<'a> QuestDbMigrator<'a> {
             .next_batch()
             .map_err(|e| format!("next_batch error: {e}"))?
         {
+            if batch.row_count() == 0 {
+                continue;
+            }
             let version_col = batch.column(0).map_err(|e| format!("column error: {e}"))?;
             let name_col = batch.column(1).map_err(|e| format!("column error: {e}"))?;
 
