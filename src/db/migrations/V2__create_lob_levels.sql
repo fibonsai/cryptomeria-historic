@@ -5,5 +5,6 @@ CREATE TABLE IF NOT EXISTS lob_levels (
     side SYMBOL INDEX TYPE POSTING,
     price DOUBLE,
     size DOUBLE,
-    best_diff DOUBLE
+    best_diff DOUBLE,
+    latency LONG
 ) TIMESTAMP(ts) PARTITION BY HOUR TTL 1 HOURS;

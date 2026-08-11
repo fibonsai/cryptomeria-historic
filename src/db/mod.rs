@@ -10,16 +10,19 @@ use anyhow::Result;
 use questdb::BorrowedSender;
 pub use questdb::QuestDb;
 use questdb::ingress::{Buffer, TimestampNanos};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const MIGRATIONS: &[Migration] = &[
     Migration {
         version: 1,
         name: "create_trades",
+        table_name: "trades",
         sql: include_str!("migrations/V1__create_trades.sql"),
     },
     Migration {
         version: 2,
         name: "create_lob_levels",
+        table_name: "lob_levels",
         sql: include_str!("migrations/V2__create_lob_levels.sql"),
     },
 ];
@@ -82,7 +85,12 @@ pub async fn apply_ttl(ttl_hours: u64, db: &QuestDb) -> Result<()> {
 /// Persist a single trade row to QuestDB.
 pub fn persist_trade(sender: &mut BorrowedSender, inst_id: &str, trade: &TradeItem) -> Result<()> {
     let mut buffer = sender.new_buffer();
-    let timestamp_nanos = (trade.ts as i64) * 1_000_000;
+    let event_ts_nanos = (trade.ts as i64) * 1_000_000;
+    let insert_ts_nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|e| anyhow::anyhow!("clock error: {e}"))?
+        .as_nanos() as i64;
+    let latency = insert_ts_nanos - event_ts_nanos;
     let trade_id = trade.trade_id.as_deref().unwrap_or("");
     let seq_id = trade
         .seq_id
@@ -99,7 +107,8 @@ pub fn persist_trade(sender: &mut BorrowedSender, inst_id: &str, trade: &TradeIt
         .column_f64("px", trade.price)?
         .column_f64("sz", trade.size)?
         .column_i64("seq_id", seq_id)?
-        .at(TimestampNanos::new(timestamp_nanos))?;
+        .column_i64("latency", latency)?
+        .at(TimestampNanos::new(event_ts_nanos))?;
     sender.flush_buffer(&mut buffer)?;
     Ok(())
 }
@@ -110,6 +119,7 @@ fn write_lob_level(
     inst_id: &str,
     exchange: &str,
     timestamp_nanos: i64,
+    latency: i64,
     side: &str,
     price: f64,
     size: f64,
@@ -123,6 +133,7 @@ fn write_lob_level(
         .column_f64("price", price)?
         .column_f64("size", size)?
         .column_f64("best_diff", best_diff)?
+        .column_i64("latency", latency)?
         .at(TimestampNanos::new(timestamp_nanos))?;
     Ok(())
 }
@@ -146,7 +157,12 @@ pub fn compute_best_diff(side: &str, best: Option<f64>, price: f64) -> f64 {
 pub fn persist_lob(sender: &mut BorrowedSender, inst_id: &str, lob: &LobItem) -> Result<()> {
     let best_bid = lob.bids.first().map(|l| l.price);
     let best_ask = lob.asks.first().map(|l| l.price);
-    let timestamp_nanos = (lob.ts as i64) * 1_000_000;
+    let event_ts_nanos = (lob.ts as i64) * 1_000_000;
+    let insert_ts_nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|e| anyhow::anyhow!("clock error: {e}"))?
+        .as_nanos() as i64;
+    let latency = insert_ts_nanos - event_ts_nanos;
     let mut buffer = sender.new_buffer();
 
     for level in &lob.bids {
@@ -155,7 +171,8 @@ pub fn persist_lob(sender: &mut BorrowedSender, inst_id: &str, lob: &LobItem) ->
             &mut buffer,
             inst_id,
             &lob.exchange,
-            timestamp_nanos,
+            event_ts_nanos,
+            latency,
             "bid",
             level.price,
             level.size,
@@ -168,7 +185,8 @@ pub fn persist_lob(sender: &mut BorrowedSender, inst_id: &str, lob: &LobItem) ->
             &mut buffer,
             inst_id,
             &lob.exchange,
-            timestamp_nanos,
+            event_ts_nanos,
+            latency,
             "ask",
             level.price,
             level.size,
