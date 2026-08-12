@@ -6,5 +6,7 @@ CREATE TABLE IF NOT EXISTS lob_levels (
     price DOUBLE,
     size DOUBLE,
     best_diff DOUBLE,
-    latency LONG
+    latency LONG,
+    snapshot_id LONG,
+    level INT
 ) TIMESTAMP(ts) PARTITION BY HOUR TTL 1 HOURS;
