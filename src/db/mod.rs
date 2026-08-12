@@ -25,6 +25,12 @@ const MIGRATIONS: &[Migration] = &[
         table_name: "lob_levels",
         sql: include_str!("migrations/V2__create_lob_levels.sql"),
     },
+    Migration {
+        version: 3,
+        name: "create_lob_snapshots",
+        table_name: "lob_snapshots",
+        sql: include_str!("migrations/V3__lob_snapshots.sql"),
+    },
 ];
 
 /// Default QuestDB connection-conf string (QDB_CLIENT_CONF format).
@@ -68,7 +74,7 @@ pub async fn apply_ttl(ttl_hours: u64, db: &QuestDb) -> Result<()> {
         return Ok(());
     }
 
-    for table in &["lob_levels", "trades"] {
+    for table in &["lob_levels", "trades", "lob_snapshots"] {
         let sql = format!("ALTER TABLE {} SET TTL {} HOURS", table, ttl_hours);
         let mut reader = db
             .borrow_reader()
@@ -124,6 +130,8 @@ fn write_lob_level(
     price: f64,
     size: f64,
     best_diff: f64,
+    snapshot_id: i64,
+    level: i32,
 ) -> Result<()> {
     buffer
         .table("lob_levels")?
@@ -134,6 +142,8 @@ fn write_lob_level(
         .column_f64("size", size)?
         .column_f64("best_diff", best_diff)?
         .column_i64("latency", latency)?
+        .column_i64("snapshot_id", snapshot_id)?
+        .column_i32("level", level)?
         .at(TimestampNanos::new(timestamp_nanos))?;
     Ok(())
 }
@@ -151,13 +161,41 @@ pub fn compute_best_diff(side: &str, best: Option<f64>, price: f64) -> f64 {
 
 /// Persist every level of an LOB item to QuestDB.
 ///
-/// `best_bid` is the top bid price; `best_ask` the top ask price.
+/// Asks are sorted ascending by price (best/lowest ask first); bids are sorted
+/// descending by price (best/highest bid first).  Each sorted level receives a
+/// `level` index starting at 0 = best price.  A single `lob_snapshots` row is
+/// written first, then all `lob_levels` rows are linked to it via
+/// `snapshot_id`.
+///
+/// If `best_bid_price > best_ask_price` the event is treated as invalid: an
+/// error is logged and nothing is persisted.
+///
 /// For bid levels `best_diff = best_bid - price`; for ask levels
 /// `best_diff = price - best_ask`.
 pub fn persist_lob(sender: &mut BorrowedSender, inst_id: &str, lob: &LobItem) -> Result<()> {
-    let best_bid = lob.bids.first().map(|l| l.price);
-    let best_ask = lob.asks.first().map(|l| l.price);
+    let mut sorted_bids = lob.bids.clone();
+    sorted_bids.sort_by(|a, b| b.price.total_cmp(&a.price));
+    let mut sorted_asks = lob.asks.clone();
+    sorted_asks.sort_by(|a, b| a.price.total_cmp(&b.price));
+
+    let best_bid = sorted_bids.first();
+    let best_ask = sorted_asks.first();
+    let best_bid_price = best_bid.map(|l| l.price);
+    let best_ask_price = best_ask.map(|l| l.price);
+
+    if let (Some(bb), Some(ba)) = (best_bid_price, best_ask_price)
+        && bb > ba
+    {
+        log::error!(
+            "[forwarder] lob best_bid_price={} > best_ask_price={} — dropping event",
+            bb,
+            ba
+        );
+        return Ok(());
+    }
+
     let event_ts_nanos = (lob.ts as i64) * 1_000_000;
+    let snapshot_id = event_ts_nanos;
     let insert_ts_nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|e| anyhow::anyhow!("clock error: {e}"))?
@@ -165,8 +203,20 @@ pub fn persist_lob(sender: &mut BorrowedSender, inst_id: &str, lob: &LobItem) ->
     let latency = insert_ts_nanos - event_ts_nanos;
     let mut buffer = sender.new_buffer();
 
-    for level in &lob.bids {
-        let best_diff = compute_best_diff("bid", best_bid, level.price);
+    buffer
+        .table("lob_snapshots")?
+        .symbol("inst_id", inst_id)?
+        .symbol("exchange", &lob.exchange)?
+        .column_i64("snapshot_id", snapshot_id)?
+        .column_i64("sequence", lob.ts as i64)?
+        .column_f64("best_bid_price", best_bid_price.unwrap_or(0.0))?
+        .column_f64("best_bid_size", best_bid.map(|l| l.size).unwrap_or(0.0))?
+        .column_f64("best_ask_price", best_ask_price.unwrap_or(0.0))?
+        .column_f64("best_ask_size", best_ask.map(|l| l.size).unwrap_or(0.0))?
+        .at(TimestampNanos::new(event_ts_nanos))?;
+
+    for (i, level) in sorted_bids.iter().enumerate() {
+        let best_diff = compute_best_diff("bid", best_bid_price, level.price);
         write_lob_level(
             &mut buffer,
             inst_id,
@@ -177,10 +227,12 @@ pub fn persist_lob(sender: &mut BorrowedSender, inst_id: &str, lob: &LobItem) ->
             level.price,
             level.size,
             best_diff,
+            snapshot_id,
+            i as i32,
         )?;
     }
-    for level in &lob.asks {
-        let best_diff = compute_best_diff("ask", best_ask, level.price);
+    for (i, level) in sorted_asks.iter().enumerate() {
+        let best_diff = compute_best_diff("ask", best_ask_price, level.price);
         write_lob_level(
             &mut buffer,
             inst_id,
@@ -191,6 +243,8 @@ pub fn persist_lob(sender: &mut BorrowedSender, inst_id: &str, lob: &LobItem) ->
             level.price,
             level.size,
             best_diff,
+            snapshot_id,
+            i as i32,
         )?;
     }
     sender.flush_buffer(&mut buffer)?;

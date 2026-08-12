@@ -35,10 +35,10 @@ Each NNG message is `{topic}\0{payload}` where:
 
 ### Supported topics
 
-| Topic prefix  | Variant   | QuestDB table |
-|---------------|-----------|---------------|
-| `lob__*`      | `LobItem`  | `lob_levels`  |
-| `trade__*`    | `TradeItem`| `trades`     |
+| Topic prefix  | Variant   | QuestDB table(s)        |
+|---------------|-----------|-------------------------|
+| `lob__*`      | `LobItem`  | `lob_snapshots`, `lob_levels`  |
+| `trade__*`    | `TradeItem`| `trades`             |
 
 ## Quick start
 
@@ -81,7 +81,7 @@ cargo run -- --ttl-hours 24
 |---------------------|--------------------------|--------------------------------------------------|
 | `--nng-addr`        | `tcp://127.0.0.1:14242`  | NNG PUB broker address to subscribe to           |
 | `--qdb-conf`        | env `QDB_CLIENT_CONF`    | QuestDB conn-conf string (e.g. `ws::addr=localhost:9000`)  |
-| `--ttl-hours`       | _none_                   | Override QuestDB table TTL (applied on startup)  |
+| `--ttl-hours`       | _none_                   | Override QuestDB table TTL (defaults: 1h lob_levels/trades, 25h lob_snapshots; applied on startup) |
 | `--dry-run`         | _off_                    | Receive and log only; do not persist to QuestDB  |
 | `--test-timeout-secs` | `0`                    | Exit after N seconds (`0` = run indefinitely)     |
 
@@ -132,15 +132,39 @@ cargo run -- --ttl-hours 24
 
 ### `lob_levels` (V2)
 
-| Column       | Type   | Indexes           |
-|--------------|--------|-------------------|
-| `inst_id`    | SYMBOL | INDEX POSTING     |
-| `exchange`   | SYMBOL | INDEX POSTING     |
-| `ts`         | TIMESTAMP |               |
-| `side`       | SYMBOL | INDEX POSTING     |
-| `price`      | DOUBLE |                   |
-| `size`       | DOUBLE |                   |
-| `best_diff`  | DOUBLE |                   |
+| Column        | Type   | Indexes           |
+|---------------|--------|-------------------|
+| `inst_id`     | SYMBOL | INDEX POSTING     |
+| `exchange`    | SYMBOL | INDEX POSTING     |
+| `ts`          | TIMESTAMP |               |
+| `side`        | SYMBOL | INDEX POSTING     |
+| `price`       | DOUBLE |                   |
+| `size`        | DOUBLE |                   |
+| `best_diff`   | DOUBLE |                   |
+| `latency`     | LONG   |                   |
+| `snapshot_id` | LONG   | links to `lob_snapshots.snapshot_id` |
+| `level`       | INT    | 0 = best price (best bid highest, best ask lowest) |
+
+### `lob_snapshots` (V3)
+
+| Column          | Type   | Indexes           |
+|-----------------|--------|-------------------|
+| `snapshot_id`   | LONG   | PK (event ts in nanos) |
+| `ts`            | TIMESTAMP | TIMESTAMP(ts), HOUR partition, 25h TTL, WAL |
+| `inst_id`       | SYMBOL | INDEX POSTING     |
+| `exchange`      | SYMBOL | INDEX POSTING     |
+| `sequence`      | LONG   | from `lob.ts`     |
+| `best_bid_price`| DOUBLE | top-of-book       |
+| `best_bid_size` | DOUBLE | top-of-book       |
+| `best_ask_price`| DOUBLE | top-of-book       |
+| `best_ask_size` | DOUBLE | top-of-book       |
+
+`lob_snapshots` stores one row per LOB event. `lob_levels.snapshot_id` links each
+price level to its parent snapshot, enabling efficient top-of-book queries
+without joining individual levels.
+
+LOB events with `best_bid_price > best_ask_price` (crossed book) are dropped
+with an error log and are **not** persisted.
 
 ## Environment variables
 

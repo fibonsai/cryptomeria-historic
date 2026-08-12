@@ -104,3 +104,10 @@ This file describes conventions and workflows for AI agents working on
 * Place `#[cfg(test)] mod tests` at the bottom of the relevant module file.
 * Use `serial_test` for tests that touch process-wide state.
 * Keep tests hermetic — no network, no QuestDB, no NNG broker.
+
+### Add an integration test
+
+* Place tests in the `tests/` directory (each `.rs` file is a separate test binary).
+* Use `testcontainers` (dev-dependency) to spin up a real QuestDB 10+ container.
+* Set `DOCKER_HOST` if the Docker socket is not at the default path.
+* Mark long-running container tests with `#[serial]` to avoid resource contention.
