@@ -187,7 +187,9 @@ pub fn persist_lob(sender: &mut BorrowedSender, inst_id: &str, lob: &LobItem) ->
         && bb > ba
     {
         log::error!(
-            "[forwarder] lob best_bid_price={} > best_ask_price={} — dropping event",
+            "[forwarder] lob inst_id={} exchange={} best_bid_price={} > best_ask_price={} — dropping event",
+            inst_id,
+            lob.exchange,
             bb,
             ba
         );
