@@ -15,6 +15,7 @@ This file describes conventions and workflows for AI agents working on
 ```
 .
 ├── Cargo.toml              # crate manifest (lib + bin)
+├── build.rs                # generates MIGRATIONS const from migration files
 ├── Makefile                # dev / CI helper targets
 ├── AGENTS.md               # this file
 ├── README.md               # user-facing documentation
@@ -24,9 +25,9 @@ This file describes conventions and workflows for AI agents working on
 │   ├── main.rs             # CLI binary entry point
 │   ├── forward.rs          # NNG wire-frame parsing (topic ␀ JSON)
 │   ├── items.rs            # MarketDataItem / LobItem / TradeItem types
-│   ├── subscriber.rs       # NNG SUB socket wrapper
+│   ├── subscriber.rs       # NNG SUB socket lifecycle + topic filtering
 │   ├── db/mod.rs           # QuestDB connection + persistence helpers
-│   ├── db/migrations/      # embedded SQL migration files
+│   ├── db/migrations/      # embedded SQL migration files (scanned by build.rs)
 │   ├── migrate.rs          # schema-versioned migration runner (QWP/WebSocket)
 │   └── logging.rs          # env_logger initializer (init())
 └── tests/                  # integration tests (currently empty)
@@ -87,10 +88,14 @@ This file describes conventions and workflows for AI agents working on
 
 ### Add a new migration
 
-1. Create `src/db/migrations/V{n}__{name}.sql`.
-2. Register in `MIGRATIONS` array inside `src/db/mod.rs`.
-3. Add a unit test case if the migration affects persistence logic.
-4. Re-run `make all`.
+1. Create `src/db/migrations/V{n}__{name>.sql`.
+2. Rebuild — `build.rs` scans the directory at compile time and generates the
+   `MIGRATIONS` const automatically. No manual registration in `src/db/mod.rs`.
+3. Run `cargo test -p build.rs` or `cargo test` to verify the build script's
+   filename/table-name parsing tests pass.
+4. Add a unit test case in `src/db/mod.rs` if the migration affects persistence
+   logic.
+5. Re-run `make all`.
 
 ### Add a new CLI flag
 

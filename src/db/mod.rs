@@ -5,33 +5,14 @@
 //! actually exists on the wire payload.
 
 use crate::items::{LobItem, TradeItem};
-use crate::migrate::{Migration, QuestDbMigrator};
+use crate::migrate::QuestDbMigrator;
 use anyhow::Result;
 use questdb::BorrowedSender;
 pub use questdb::QuestDb;
 use questdb::ingress::{Buffer, TimestampNanos};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-const MIGRATIONS: &[Migration] = &[
-    Migration {
-        version: 1,
-        name: "create_trades",
-        table_name: "trades",
-        sql: include_str!("migrations/V1__create_trades.sql"),
-    },
-    Migration {
-        version: 2,
-        name: "create_lob_levels",
-        table_name: "lob_levels",
-        sql: include_str!("migrations/V2__create_lob_levels.sql"),
-    },
-    Migration {
-        version: 3,
-        name: "create_lob_snapshots",
-        table_name: "lob_snapshots",
-        sql: include_str!("migrations/V3__lob_snapshots.sql"),
-    },
-];
+include!(concat!(env!("OUT_DIR"), "/migrations.rs"));
 
 /// Default QuestDB connection-conf string (QDB_CLIENT_CONF format).
 pub const DEFAULT_QDB_CONF: &str = "ws::addr=localhost:9000;username=admin;password=quest;";
@@ -278,5 +259,51 @@ mod tests {
         assert_eq!(compute_best_diff("ask", None, 103.0), 0.0);
 
         assert_eq!(compute_best_diff("neutral", best_bid, 100.0), 0.0);
+    }
+
+    #[test]
+    fn migrations_includes_all_files_from_disk() {
+        assert_eq!(MIGRATIONS.len(), 4);
+    }
+
+    #[test]
+    fn migrations_versions_are_sorted_and_sequential() {
+        let versions: Vec<i32> = MIGRATIONS.iter().map(|m| m.version).collect();
+        assert_eq!(versions, vec![1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn migrations_names_match_filenames() {
+        let names: Vec<&str> = MIGRATIONS.iter().map(|m| m.name).collect();
+        assert_eq!(
+            names,
+            vec![
+                "create_trades",
+                "create_lob_levels",
+                "create_lob_snapshots",
+                "create_view_lob",
+            ]
+        );
+    }
+
+    #[test]
+    fn migrations_table_names_extracted_from_sql() {
+        let table_names: Vec<&str> = MIGRATIONS.iter().map(|m| m.table_name).collect();
+        assert_eq!(
+            table_names,
+            vec!["trades", "lob_levels", "lob_snapshots", "lob"]
+        );
+    }
+
+    #[test]
+    fn migrations_sql_is_non_empty() {
+        for m in MIGRATIONS {
+            assert!(
+                !m.sql.is_empty(),
+                "V{}__{} has empty SQL",
+                m.version,
+                m.name
+            );
+        }
     }
 }

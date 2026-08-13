@@ -166,6 +166,11 @@ without joining individual levels.
 LOB events with `best_bid_price > best_ask_price` (crossed book) are dropped
 with an error log and are **not** persisted.
 
+### `lob` view (V4)
+
+A convenience view that denormalises `lob_levels` into `bids` and `asks` arrays
+(2-D arrays of `[price, size]` pairs), one row per `lob_snapshots` entry.
+
 ## Environment variables
 
 | Variable          | Description                                      |
