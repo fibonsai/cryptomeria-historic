@@ -88,7 +88,7 @@ This file describes conventions and workflows for AI agents working on
 
 ### Add a new migration
 
-1. Create `src/db/migrations/V{n}__{name>.sql`.
+1. Create `src/db/migrations/V{n}__{name}.sql`.
 2. Rebuild — `build.rs` scans the directory at compile time and generates the
    `MIGRATIONS` const automatically. No manual registration in `src/db/mod.rs`.
 3. Run `cargo test -p build.rs` or `cargo test` to verify the build script's
