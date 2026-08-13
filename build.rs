@@ -1,6 +1,6 @@
 //! Build script: dynamically generate the `MIGRATIONS` const from SQL files.
 //!
-//! Scans `src/db/migrations/` for files named `V{n}__{name>.sql`, parses the
+//! Scans `src/db/migrations/` for files named `V{n}__{name}.sql`, parses the
 //! version and name from the filename, reads each SQL file to extract the
 //! target table/view name, and emits `$OUT_DIR/migrations.rs` containing:
 //!
