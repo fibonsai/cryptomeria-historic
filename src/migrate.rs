@@ -5,9 +5,14 @@
 //!
 //! When an embedded migration's SQL content has changed (detected via a hash
 //! stored alongside the version record), the migration is **force-recreated**:
-//! the associated QuestDB table is dropped and the migration SQL re-run.  This
-//! lets schema changes be made by editing existing `V{n}` files in place
-//! rather than adding new migration versions.
+//! the associated QuestDB table or view is dropped (distinguished via the
+//! `is_view` field) and the migration SQL re-run.  This lets schema changes be
+//! made by editing existing `V{n}` files in place rather than adding new
+//! migration versions.
+//!
+//! When `drop_first` is passed to `run_migrations`, every migration target is
+//! dropped in reverse version order and `schema_version` is cleared, forcing a
+//! full re-apply from scratch.
 
 use chrono::Utc;
 use questdb::QuestDb;
@@ -26,6 +31,7 @@ pub struct Migration {
     pub name: &'static str,
     pub table_name: &'static str,
     pub sql: &'static str,
+    pub is_view: bool,
 }
 
 /// A migration that has already been applied.
@@ -42,6 +48,48 @@ fn sql_hash(sql: &str) -> String {
     format!("{:x}", hasher.finish())
 }
 
+/// Split a SQL string into individual statements, respecting single-quoted
+/// string literals so that semicolons inside literals are not treated as
+/// statement terminators.
+fn split_sql_statements(sql: &str) -> Vec<String> {
+    let mut statements = Vec::new();
+    let mut current = String::new();
+    let mut in_string = false;
+    let mut escape = false;
+
+    for c in sql.chars() {
+        if escape {
+            current.push(c);
+            escape = false;
+            continue;
+        }
+        if in_string && c == '\\' {
+            current.push(c);
+            escape = true;
+            continue;
+        }
+        if c == '\'' {
+            in_string = !in_string;
+            current.push(c);
+            continue;
+        }
+        if c == ';' && !in_string {
+            let stmt = current.trim().to_string();
+            if !stmt.is_empty() {
+                statements.push(stmt);
+            }
+            current.clear();
+            continue;
+        }
+        current.push(c);
+    }
+    let stmt = current.trim().to_string();
+    if !stmt.is_empty() {
+        statements.push(stmt);
+    }
+    statements
+}
+
 /// Runs SQL migrations against QuestDB over QWP/WebSocket.
 pub struct QuestDbMigrator<'a> {
     db: &'a QuestDb,
@@ -53,18 +101,20 @@ impl<'a> QuestDbMigrator<'a> {
     }
 
     fn run_sql(&self, sql: &str) -> Result<(), String> {
-        let mut reader = self
-            .db
-            .borrow_reader()
-            .map_err(|e| format!("borrow reader error: {e}"))?;
-        let mut cursor = reader
-            .execute(sql)
-            .map_err(|e| format!("execute error: {e}"))?;
-        while cursor
-            .next_batch()
-            .map_err(|e| format!("cursor error: {e}"))?
-            .is_some()
-        {}
+        for stmt in split_sql_statements(sql) {
+            let mut reader = self
+                .db
+                .borrow_reader()
+                .map_err(|e| format!("borrow reader error: {e}"))?;
+            let mut cursor = reader
+                .execute(&stmt)
+                .map_err(|e| format!("execute error: {e}"))?;
+            while cursor
+                .next_batch()
+                .map_err(|e| format!("cursor error: {e}"))?
+                .is_some()
+            {}
+        }
         Ok(())
     }
 
@@ -116,10 +166,53 @@ impl<'a> QuestDbMigrator<'a> {
     /// Run all migrations from `migrations` that have not yet been applied.
     ///
     /// If an already-applied migration's SQL hash differs from the embedded
-    /// hash, the table is dropped and the migration re-run (force-recreate).
-    pub async fn run_migrations(&self, migrations: &[Migration]) -> Result<(), String> {
+    /// hash, the table/view is dropped and the migration re-run (force-recreate).
+    ///
+    /// When `drop_first` is true, every migration target (table or view) is
+    /// dropped — in reverse version order — and the `schema_version` table is
+    /// cleared so that all migrations re-apply from scratch.  This is the
+    /// escape hatch for operators when views/tables exist outside of
+    /// `schema_version` tracking.
+    pub async fn run_migrations(
+        &self,
+        migrations: &[Migration],
+        drop_first: bool,
+    ) -> Result<(), String> {
         self.run_sql(SCHEMA_VERSION_DDL)?;
         let _ = self.run_sql(ADD_SQL_HASH_COLUMN);
+
+        if drop_first {
+            log::warn!("[migrate] drop-first requested: dropping all targets in reverse order");
+            for migration in migrations.iter().rev() {
+                let drop_sql = if migration.is_view {
+                    format!("DROP VIEW IF EXISTS {}", migration.table_name)
+                } else {
+                    format!("DROP TABLE IF EXISTS {}", migration.table_name)
+                };
+                if let Err(e) = self.run_sql(&drop_sql) {
+                    log::warn!(
+                        "[migrate] V{}__{}: {} during drop-first: {e}",
+                        migration.version,
+                        migration.name,
+                        if migration.is_view {
+                            "DROP VIEW"
+                        } else {
+                            "DROP TABLE"
+                        },
+                    );
+                } else {
+                    log::info!(
+                        "[migrate] V{}__{}: dropped {}",
+                        migration.version,
+                        migration.name,
+                        if migration.is_view { "view" } else { "table" },
+                    );
+                }
+            }
+            self.run_sql("DELETE FROM schema_version")?;
+            log::info!("[migrate] schema_version cleared");
+        }
+
         let applied = self.list_applied()?;
         let applied_map: HashMap<i32, &AppliedMigration> =
             applied.iter().map(|m| (m.version, m)).collect();
@@ -140,12 +233,17 @@ impl<'a> QuestDbMigrator<'a> {
                     continue;
                 }
                 log::warn!(
-                    "[migrate] V{}__{} SQL changed (hash mismatch), force-recreating table {}",
+                    "[migrate] V{}__{} SQL changed (hash mismatch), force-recreating {} {}",
                     version,
                     migration.name,
+                    if migration.is_view { "view" } else { "table" },
                     migration.table_name
                 );
-                let drop_sql = format!("DROP TABLE IF EXISTS {}", migration.table_name);
+                let drop_sql = if migration.is_view {
+                    format!("DROP VIEW IF EXISTS {}", migration.table_name)
+                } else {
+                    format!("DROP TABLE IF EXISTS {}", migration.table_name)
+                };
                 self.run_sql(&drop_sql).map_err(|e| {
                     format!(
                         "Failed to drop table for V{}__{}: {e}",
@@ -199,6 +297,7 @@ mod tests {
             name: "test_migration",
             table_name: "test_table",
             sql: "SELECT 1",
+            is_view: false,
         };
         assert_eq!(m.version, 1);
         assert_eq!(m.name, "test_migration");
@@ -220,5 +319,30 @@ mod tests {
             sql_hash("CREATE TABLE foo (a INT)"),
             sql_hash("CREATE TABLE foo (a LONG)")
         );
+    }
+
+    #[test]
+    fn split_sql_statements_splits_on_semicolons() {
+        let sql = "DROP VIEW IF EXISTS lob;\nCREATE VIEW lob AS ( SELECT 1 );";
+        let stmts = split_sql_statements(sql);
+        assert_eq!(stmts.len(), 2);
+        assert_eq!(stmts[0], "DROP VIEW IF EXISTS lob");
+        assert_eq!(stmts[1], "CREATE VIEW lob AS ( SELECT 1 )");
+    }
+
+    #[test]
+    fn split_sql_statements_single_statement_no_terminator() {
+        let sql = "CREATE TABLE foo (a INT)";
+        let stmts = split_sql_statements(sql);
+        assert_eq!(stmts.len(), 1);
+        assert_eq!(stmts[0], "CREATE TABLE foo (a INT)");
+    }
+
+    #[test]
+    fn split_sql_statements_preserves_semicolons_in_string_literals() {
+        let sql = "INSERT INTO t (c) VALUES ('a;b');\nSELECT 1";
+        let stmts = split_sql_statements(sql);
+        assert_eq!(stmts.len(), 2);
+        assert_eq!(stmts[0], "INSERT INTO t (c) VALUES ('a;b')");
     }
 }

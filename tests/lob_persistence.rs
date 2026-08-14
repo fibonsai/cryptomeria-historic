@@ -93,7 +93,9 @@ fn lob_persistence_round_trip() {
 
     rt.block_on(async {
         let qdb = connect_with_retry(&conf, 60).await;
-        db::run_migrations(&qdb).await.expect("migrations failed");
+        db::run_migrations(&qdb, false)
+            .await
+            .expect("migrations failed");
 
         let lob = build_sample_lob();
         let snapshot_id_expected = (lob.ts as i64) * 1_000_000;
@@ -247,7 +249,9 @@ fn lob_persistence_drops_invalid_crossed_book() {
 
     rt.block_on(async {
         let qdb = connect_with_retry(&conf, 60).await;
-        db::run_migrations(&qdb).await.expect("migrations failed");
+        db::run_migrations(&qdb, false)
+            .await
+            .expect("migrations failed");
 
         // best_bid (100.0) > best_ask (90.0) — invalid crossed book.
         let lob = LobItem {

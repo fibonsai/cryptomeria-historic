@@ -40,10 +40,14 @@ pub async fn connect(conf_str: &str) -> Result<QuestDb> {
 }
 
 /// Run embedded SQL migrations against QuestDB via QWP/WebSocket.
-pub async fn run_migrations(db: &QuestDb) -> Result<()> {
+///
+/// When `drop_first` is true, every migration target (table or view) is dropped
+/// in reverse version order and `schema_version` is cleared, forcing a full
+/// re-apply from scratch.
+pub async fn run_migrations(db: &QuestDb, drop_first: bool) -> Result<()> {
     let migrator = QuestDbMigrator::new(db);
     migrator
-        .run_migrations(MIGRATIONS)
+        .run_migrations(MIGRATIONS, drop_first)
         .await
         .map_err(|e| anyhow::anyhow!("migration error: {e}"))?;
     Ok(())
@@ -293,6 +297,12 @@ mod tests {
             table_names,
             vec!["trades", "lob_levels", "lob_snapshots", "lob"]
         );
+    }
+
+    #[test]
+    fn migrations_is_view_flags() {
+        let is_views: Vec<bool> = MIGRATIONS.iter().map(|m| m.is_view).collect();
+        assert_eq!(is_views, vec![false, false, false, true]);
     }
 
     #[test]
