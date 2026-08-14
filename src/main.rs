@@ -65,6 +65,11 @@ fn process_message(
         forward::parse_frame(bytes).with_context(|| "failed to parse wire frame")?;
     let (kind, inst_id) =
         subscriber::classify_topic(&topic).ok_or_else(|| anyhow!("unrecognised topic: {topic}"))?;
+    let log_level = if dry_run {
+        log::Level::Info
+    } else {
+        log::Level::Debug
+    };
 
     match (&item, kind) {
         (MarketDataItem::Lob(lob), "lob") => {
@@ -73,13 +78,8 @@ fn process_message(
                 db::persist_lob(s, inst_id, lob).context("failed to persist lob levels")?;
             }
             if dry_run || log::log_enabled!(log::Level::Debug) {
-                let level = if dry_run {
-                    log::Level::Info
-                } else {
-                    log::Level::Debug
-                };
                 log::log!(
-                    level,
+                    log_level,
                     "[forwarder] {topic}: lob {level_count} levels (ts={}) exchange={}",
                     lob.ts,
                     lob.exchange
@@ -91,13 +91,8 @@ fn process_message(
                 db::persist_trade(s, inst_id, trade).context("failed to persist trade")?;
             }
             if dry_run || log::log_enabled!(log::Level::Debug) {
-                let level = if dry_run {
-                    log::Level::Info
-                } else {
-                    log::Level::Debug
-                };
                 log::log!(
-                    level,
+                    log_level,
                     "[forwarder] {topic}: trade px={} sz={} side={} (ts={}) exchange={}",
                     trade.price,
                     trade.size,
