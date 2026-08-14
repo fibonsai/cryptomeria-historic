@@ -67,7 +67,7 @@ cargo run -- --dry-run
 
 # Custom NNG and QuestDB addresses:
 cargo run -- \
-  --nng-addr tcp://127.0.0.1:14242 \
+  --nng-addrs tcp://127.0.0.1:14242,tcp://10.0.0.1:14242 \
   --qdb-conf "ws::addr=questdb:9000;username=admin;password=quest;"
 
 # Auto-exit after 30 seconds (useful for CI):
@@ -84,7 +84,7 @@ cargo run -- --drop-first
 
 | Flag                | Default                  | Description                                      |
 |---------------------|--------------------------|--------------------------------------------------|
-| `--nng-addr`        | `tcp://127.0.0.1:14242`  | NNG PUB broker address to subscribe to           |
+| `--nng-addrs`     | `tcp://127.0.0.1:14242`  | Comma-separated NNG PUB broker addresses to subscribe to (e.g. `tcp://1.2.3.4:14242,tcp://5.6.7.8:14242`) |
 | `--qdb-conf`        | env `QDB_CLIENT_CONF`    | QuestDB conn-conf string (e.g. `ws::addr=localhost:9000`)  |
 | `--ttl-hours`       | _none_                   | Override QuestDB table TTL (defaults: 1h lob_levels/trades, 25h lob_snapshots; applied on startup) |
 | `--dry-run`         | _off_                    | Receive and log only; do not persist to QuestDB  |

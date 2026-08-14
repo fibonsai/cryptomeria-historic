@@ -28,9 +28,10 @@ const RECV_TIMEOUT_WARN_INTERVAL_SECS: u64 = 5;
     about = "Forward LOB/trade data from an NNG PUB broker to QuestDB"
 )]
 struct Cli {
-    /// NNG PUB broker address to subscribe to (e.g. `tcp://127.0.0.1:14242`).
+    /// NNG PUB broker addresses to subscribe to, comma-separated
+    /// (e.g. `tcp://127.0.0.1:14242,tcp://10.0.0.1:14242`).
     #[arg(long, default_value = "tcp://127.0.0.1:14242")]
-    nng_addr: String,
+    nng_addrs: String,
 
     /// QuestDB connection-conf string (QDB_CLIENT_CONF format).
     /// Example: `ws::addr=localhost:9000;username=admin;password=quest;`
@@ -116,6 +117,18 @@ fn item_kind(item: &MarketDataItem) -> &'static str {
     }
 }
 
+/// Parse a comma-separated list of NNG broker addresses into a `Vec<String>`.
+///
+/// Whitespace around each address is trimmed; empty entries are dropped.
+fn parse_nng_addrs(addrs: &str) -> Vec<String> {
+    addrs
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+        .collect()
+}
+
 /// Blocking receive loop running on a dedicated thread.
 fn receive_loop(
     sub_socket: subscriber::NngSubscriber,
@@ -168,7 +181,7 @@ async fn main() -> Result<()> {
 
     let qdb_conf = db::resolve_questdb_conf(cli.qdb_conf.as_deref());
 
-    log::info!("[system] NNG broker: {}", cli.nng_addr);
+    log::info!("[system] NNG brokers: {}", cli.nng_addrs);
     log::info!("[system] QuestDB conf: {}", qdb_conf);
 
     // Connect QuestDB pool (skip in dry-run).
@@ -197,10 +210,19 @@ async fn main() -> Result<()> {
             .context("TTL application failed")?;
     }
 
-    // Connect NNG subscriber.
-    let sub_socket = subscriber::NngSubscriber::new(&cli.nng_addr)
-        .with_context(|| format!("failed to connect NNG subscriber to {}", cli.nng_addr))?;
-    log::info!("[system] subscribed to NNG PUB broker");
+    // Connect NNG subscriber to all requested brokers.
+    let nng_addrs = parse_nng_addrs(&cli.nng_addrs);
+    log::info!("[system] connecting to {} NNG broker(s)", nng_addrs.len());
+    for addr in &nng_addrs {
+        log::info!("[system]   NNG dial: {addr}");
+    }
+    let sub_socket = subscriber::NngSubscriber::new(&nng_addrs).with_context(|| {
+        format!(
+            "failed to connect NNG subscriber to: {}",
+            nng_addrs.join(", ")
+        )
+    })?;
+    log::info!("[system] subscribed to NNG PUB broker(s)");
 
     // Spawn the blocking receive loop.
     let shutdown = Arc::new(AtomicBool::new(false));
@@ -243,11 +265,49 @@ mod tests {
     #[test]
     fn cli_defaults() {
         let cli = Cli::try_parse_from(["cryptomeria-historic"]).unwrap();
-        assert_eq!(cli.nng_addr, "tcp://127.0.0.1:14242");
+        assert_eq!(cli.nng_addrs, "tcp://127.0.0.1:14242");
         assert!(!cli.dry_run);
         assert!(!cli.drop_first);
         assert_eq!(cli.ttl_hours, None);
         assert_eq!(cli.test_timeout_secs, 0);
+    }
+
+    #[test]
+    fn cli_accepts_multiple_nng_addrs() {
+        let cli = Cli::try_parse_from([
+            "cryptomeria-historic",
+            "--nng-addrs",
+            "tcp://1.2.3.4:14242,tcp://5.6.7.8:14242",
+        ])
+        .unwrap();
+        assert_eq!(cli.nng_addrs, "tcp://1.2.3.4:14242,tcp://5.6.7.8:14242");
+    }
+
+    #[test]
+    fn parse_nng_addrs_single() {
+        let result = parse_nng_addrs("tcp://127.0.0.1:14242");
+        assert_eq!(result, vec!["tcp://127.0.0.1:14242".to_string()]);
+    }
+
+    #[test]
+    fn parse_nng_addrs_multiple() {
+        let result = parse_nng_addrs("tcp://1.2.3.4:14242,tcp://5.6.7.8:14242");
+        assert_eq!(
+            result,
+            vec![
+                "tcp://1.2.3.4:14242".to_string(),
+                "tcp://5.6.7.8:14242".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_nng_addrs_trims_whitespace_and_drops_empty() {
+        let result = parse_nng_addrs(" tcp://a:1 , , tcp://b:2 ");
+        assert_eq!(
+            result,
+            vec!["tcp://a:1".to_string(), "tcp://b:2".to_string(),]
+        );
     }
 
     #[test]

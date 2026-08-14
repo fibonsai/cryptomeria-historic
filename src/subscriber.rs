@@ -16,20 +16,25 @@ pub const LOB_TOPIC_PREFIX: &str = "lob__";
 /// Topic prefix for trade messages.
 pub const TRADE_TOPIC_PREFIX: &str = "trade__";
 
-/// A connected NNG subscriber.
+/// A connected NNG subscriber that may dial multiple PUB brokers.
 pub struct NngSubscriber {
     socket: Socket,
 }
 
 impl NngSubscriber {
-    /// Connect to the external NNG PUB broker at `addr` (e.g.
+    /// Connect to one or more external NNG PUB brokers (e.g.
     /// `tcp://127.0.0.1:14242`) and subscribe to all topics.
-    pub fn new(addr: &str) -> Result<Self, Error> {
+    ///
+    /// A single SUB socket dials every address in `addrs`, so messages from
+    /// all brokers are multiplexed onto the same socket.
+    pub fn new(addrs: &[String]) -> Result<Self, Error> {
         let socket = Socket::new(Protocol::Sub0)?;
         // Empty subscription = receive all messages; filtering happens in-process.
         socket.set_opt::<Subscribe>(Vec::<u8>::new())?;
         socket.set_opt::<RecvTimeout>(Some(Duration::from_millis(RECV_TIMEOUT_MS)))?;
-        socket.dial(addr)?;
+        for addr in addrs {
+            socket.dial(addr)?;
+        }
         Ok(NngSubscriber { socket })
     }
 
@@ -86,5 +91,16 @@ mod tests {
     #[test]
     fn returns_none_for_empty_instrument() {
         assert_eq!(classify_topic("lob__"), None);
+    }
+
+    #[test]
+    fn new_with_empty_addrs_creates_socket_without_dialing() {
+        let _sub = NngSubscriber::new(&[]).unwrap();
+    }
+
+    #[test]
+    fn new_with_single_addr_compiles() {
+        let addr = "tcp://127.0.0.1:14242".to_string();
+        let _sub = NngSubscriber::new(&[addr]).unwrap();
     }
 }
