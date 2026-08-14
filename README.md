@@ -20,8 +20,10 @@ cryptomeria-marketdata ──NNG PUB──► cryptomeria-historic ──QWP/WS�
 * **NNG subscriber thread** — blocking receive loop on a dedicated thread; filters
   by topic prefix (`lob__`, `trade__`) and parses wire frames.
 * **QuestDB writer** — persists rows via `questdb-rs` QWP/WebSocket `BorrowedSender`.
-* **Migration runner** — executes embedded SQL migrations on startup via `BorrowedReader::execute`
-  over QWP/WebSocket, tracking applied versions in a `schema_version` table.
+ * **Migration runner** — executes embedded SQL migrations on startup via `BorrowedReader::execute`
+   over QWP/WebSocket, tracking applied versions in a `schema_version` table. The runner
+   distinguishes table vs view migrations (via an `is_view` flag) and supports a `--drop-first`
+   escape hatch that drops all targets and re-applies from scratch.
 
 ### Wire format
 
@@ -73,6 +75,9 @@ cargo run -- --test-timeout-secs 30
 
 # Apply a custom TTL on the destination tables:
 cargo run -- --ttl-hours 24
+
+# Drop all tables/views and re-apply all migrations from scratch:
+cargo run -- --drop-first
 ```
 
 ### CLI options
@@ -83,6 +88,7 @@ cargo run -- --ttl-hours 24
 | `--qdb-conf`        | env `QDB_CLIENT_CONF`    | QuestDB conn-conf string (e.g. `ws::addr=localhost:9000`)  |
 | `--ttl-hours`       | _none_                   | Override QuestDB table TTL (defaults: 1h lob_levels/trades, 25h lob_snapshots; applied on startup) |
 | `--dry-run`         | _off_                    | Receive and log only; do not persist to QuestDB  |
+| `--drop-first`      | _off_                    | Drop all migration targets (tables and views) and clear `schema_version` before re-applying all migrations from scratch |
 | `--test-timeout-secs` | `0`                    | Exit after N seconds (`0` = run indefinitely)     |
 
 ## Development
@@ -170,6 +176,11 @@ with an error log and are **not** persisted.
 
 A convenience view that denormalises `lob_levels` into `bids` and `asks` arrays
 (2-D arrays of `[price, size]` pairs), one row per `lob_snapshots` entry.
+
+This migration is **idempotent**: it prepends `DROP VIEW IF EXISTS 'lob'` before
+`CREATE VIEW`, so it can be safely re-applied if the view exists but is not tracked
+in `schema_version`. The `--drop-first` flag provides an additional operator escape
+hatch for a full schema reset.
 
 ## Environment variables
 
