@@ -33,6 +33,7 @@ fn main() {
         let version = m.version;
         let name = &m.name;
         let table_name = &m.table_name;
+        let is_view = m.is_view;
         let include_path = format!("{}/{}", MIGRATIONS_DIR, m.filename);
         content.push_str(&format!(
             "    Migration {{\n\
@@ -40,6 +41,7 @@ fn main() {
              \x20   name: \"{name}\",\n\
              \x20   table_name: \"{table_name}\",\n\
              \x20   sql: include_str!(concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/{include_path}\")),\n\
+             \x20   is_view: {is_view},\n\
              \x20   }},\n",
         ));
     }
@@ -53,6 +55,7 @@ struct MigrationEntry {
     version: i32,
     name: String,
     table_name: String,
+    is_view: bool,
     filename: String,
 }
 
@@ -70,6 +73,7 @@ fn collect_migrations(dir: &str) -> Vec<MigrationEntry> {
                 version,
                 name,
                 table_name: String::new(),
+                is_view: false,
                 filename,
             })
         })
@@ -81,7 +85,7 @@ fn collect_migrations(dir: &str) -> Vec<MigrationEntry> {
         let path = format!("{}/{}", dir, entry.filename);
         let sql =
             std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("failed to read {path}: {e}"));
-        entry.table_name = extract_table_name(&sql).unwrap_or_default();
+        (entry.table_name, entry.is_view) = extract_table_and_view(&sql).unwrap_or_default();
     }
 
     entries
@@ -95,31 +99,31 @@ fn parse_migration_filename(filename: &str) -> Option<(i32, String)> {
     Some((version, name.to_string()))
 }
 
-/// Extract the table or view name from a `CREATE TABLE [IF NOT EXISTS] name`
-/// or `CREATE VIEW [name]` statement.
-fn extract_table_name(sql: &str) -> Option<String> {
+/// Extract the table/view name and whether the statement creates a view from a
+/// `CREATE TABLE [IF NOT EXISTS] name` or `CREATE VIEW [name]` statement.
+fn extract_table_and_view(sql: &str) -> Option<(String, bool)> {
     let upper = sql.to_uppercase();
     let create_table = upper.find("CREATE TABLE");
     let create_view = upper.find("CREATE VIEW");
 
-    let (keyword_len, is_table) = match (create_table, create_view) {
-        (Some(pt), Some(pv)) if pv < pt => (11, false),
-        (Some(_), _) => (12, true),
-        (None, Some(_)) => (11, false),
+    let (keyword_len, is_view) = match (create_table, create_view) {
+        (Some(pt), Some(pv)) if pv < pt => (11, true),
+        (Some(_), _) => (12, false),
+        (None, Some(_)) => (11, true),
         (None, None) => return None,
     };
 
-    let keyword = if is_table {
-        "CREATE TABLE"
-    } else {
+    let keyword = if is_view {
         "CREATE VIEW"
+    } else {
+        "CREATE TABLE"
     };
     let pos = upper.find(keyword)?;
     let after = &sql[pos + keyword_len..];
 
     let rest = after.trim_start();
 
-    let rest = if is_table && rest.to_uppercase().starts_with("IF NOT EXISTS") {
+    let rest = if !is_view && rest.to_uppercase().starts_with("IF NOT EXISTS") {
         &rest["IF NOT EXISTS".len()..]
     } else {
         rest
@@ -138,7 +142,7 @@ fn extract_table_name(sql: &str) -> Option<String> {
         .or_else(|| name.strip_prefix('`').and_then(|s| s.strip_suffix('`')))
         .unwrap_or(name);
 
-    Some(name.to_string())
+    Some((name.to_string(), is_view))
 }
 
 #[cfg(test)]
@@ -165,30 +169,6 @@ mod tests {
     }
 
     #[test]
-    fn extract_table_name_from_create_table() {
-        let sql = "CREATE TABLE IF NOT EXISTS trades (inst_id SYMBOL)";
-        assert_eq!(extract_table_name(sql), Some("trades".to_string()));
-    }
-
-    #[test]
-    fn extract_table_name_from_create_table_without_if_not_exists() {
-        let sql = "CREATE TABLE lob_levels (inst_id SYMBOL)";
-        assert_eq!(extract_table_name(sql), Some("lob_levels".to_string()));
-    }
-
-    #[test]
-    fn extract_table_name_from_create_view_with_quotes() {
-        let sql = "CREATE VIEW 'lob' AS ( SELECT 1 )";
-        assert_eq!(extract_table_name(sql), Some("lob".to_string()));
-    }
-
-    #[test]
-    fn extract_table_name_from_create_view_no_quotes() {
-        let sql = "CREATE VIEW my_view AS SELECT 1";
-        assert_eq!(extract_table_name(sql), Some("my_view".to_string()));
-    }
-
-    #[test]
     fn collect_migrations_finds_all_files() {
         let entries = collect_migrations("src/db/migrations");
         assert_eq!(entries.len(), 4);
@@ -211,6 +191,30 @@ mod tests {
                 .map(|e| e.table_name.as_str())
                 .collect::<Vec<_>>(),
             vec!["trades", "lob_levels", "lob_snapshots", "lob"]
+        );
+        assert_eq!(
+            entries.iter().map(|e| e.is_view).collect::<Vec<_>>(),
+            vec![false, false, false, true]
+        );
+    }
+
+    #[test]
+    fn extract_table_and_view_detects_views_and_tables() {
+        assert_eq!(
+            extract_table_and_view("CREATE TABLE IF NOT EXISTS trades (inst_id SYMBOL)"),
+            Some(("trades".to_string(), false))
+        );
+        assert_eq!(
+            extract_table_and_view("CREATE TABLE lob_levels (inst_id SYMBOL)"),
+            Some(("lob_levels".to_string(), false))
+        );
+        assert_eq!(
+            extract_table_and_view("CREATE VIEW 'lob' AS ( SELECT 1 )"),
+            Some(("lob".to_string(), true))
+        );
+        assert_eq!(
+            extract_table_and_view("CREATE VIEW my_view AS SELECT 1"),
+            Some(("my_view".to_string(), true))
         );
     }
 }

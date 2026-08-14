@@ -45,6 +45,11 @@ struct Cli {
     #[arg(long)]
     dry_run: bool,
 
+    /// Drop all migration targets (tables and views) and clear schema_version
+    /// before applying migrations, forcing a full re-apply from scratch.
+    #[arg(long)]
+    drop_first: bool,
+
     /// Exit automatically after this many seconds (0 = no timeout; for CI).
     #[arg(long, default_value_t = 0)]
     test_timeout_secs: u64,
@@ -168,7 +173,9 @@ async fn main() -> Result<()> {
 
     // Run migrations before starting the receive loop.
     if let Some(ref qdb) = questdb {
-        db::run_migrations(qdb).await.context("migration failed")?;
+        db::run_migrations(qdb, cli.drop_first)
+            .await
+            .context("migration failed")?;
     }
 
     // Optional TTL override.
@@ -226,8 +233,15 @@ mod tests {
         let cli = Cli::try_parse_from(["cryptomeria-historic"]).unwrap();
         assert_eq!(cli.nng_addr, "tcp://127.0.0.1:14242");
         assert!(!cli.dry_run);
+        assert!(!cli.drop_first);
         assert_eq!(cli.ttl_hours, None);
         assert_eq!(cli.test_timeout_secs, 0);
+    }
+
+    #[test]
+    fn cli_accepts_drop_first_flag() {
+        let cli = Cli::try_parse_from(["cryptomeria-historic", "--drop-first"]).unwrap();
+        assert!(cli.drop_first);
     }
 
     #[test]

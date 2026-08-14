@@ -1,3 +1,4 @@
+DROP VIEW IF EXISTS 'lob';
 CREATE VIEW 'lob' AS ( 
 WITH dedup_levels AS (
     -- Step 1: remove duplicate rows per level, keep the latest one
