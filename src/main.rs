@@ -143,7 +143,6 @@ fn receive_loop(
     questdb: Option<Arc<QuestDb>>,
     shutdown: Arc<AtomicBool>,
     dry_run: bool,
-    nng_addrs: &[String],
 ) {
     let mut sender: Option<BorrowedSender> = questdb.as_ref().map(|db| {
         db.borrow_sender()
@@ -167,12 +166,10 @@ fn receive_loop(
             }
             Err(nng::Error::TimedOut) => {
                 if last_timeout_warn.elapsed().as_secs() >= RECV_TIMEOUT_WARN_INTERVAL_SECS {
+                    let down = sub_socket.down_addrs();
                     log::warn!(
                         "{}",
-                        format_broker_down_warning(
-                            last_timeout_warn.elapsed().as_secs(),
-                            nng_addrs
-                        )
+                        format_broker_down_warning(last_timeout_warn.elapsed().as_secs(), &down)
                     );
                     last_timeout_warn = std::time::Instant::now();
                 }
@@ -239,9 +236,8 @@ async fn main() -> Result<()> {
     // Spawn the blocking receive loop.
     let shutdown = Arc::new(AtomicBool::new(false));
     let shutdown_loop = Arc::clone(&shutdown);
-    let handle = thread::spawn(move || {
-        receive_loop(sub_socket, questdb, shutdown_loop, cli.dry_run, &nng_addrs)
-    });
+    let handle =
+        thread::spawn(move || receive_loop(sub_socket, questdb, shutdown_loop, cli.dry_run));
     log::info!("[system] forwarder running (Ctrl+C to stop)");
 
     // Wait for shutdown signal.
@@ -416,5 +412,26 @@ mod tests {
             msg.contains("tcp://5.6.7.8:14242"),
             "warning must list second broker: {msg}"
         );
+    }
+
+    #[test]
+    fn format_broker_down_warning_with_subset_excludes_healthy_brokers() {
+        let all_addrs: [String; 2] = [
+            "tcp://127.0.0.1:14243".to_string(),
+            "tcp://127.0.0.1:14244".to_string(),
+        ];
+        let down_only = vec!["tcp://127.0.0.1:14243".to_string()];
+        let msg = format_broker_down_warning(5, &down_only);
+        assert!(
+            msg.contains("tcp://127.0.0.1:14243"),
+            "warning must include down broker: {msg}"
+        );
+        assert!(
+            !msg.contains("tcp://127.0.0.1:14244"),
+            "warning must not include healthy broker: {msg}"
+        );
+        // Sanity: the full list has both; the subset has only one.
+        assert_eq!(all_addrs.len(), 2);
+        assert_eq!(down_only.len(), 1);
     }
 }
