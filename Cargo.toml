@@ -18,9 +18,7 @@ path = "src/main.rs"
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }
-nng = "1"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+cryptomeria-nng-client = { path = "cryptomeria-nng-client" }
 questdb-rs = { path = "vendor/questdb-rs", default-features = false, features = ["chrono-timestamp", "sync-sender", "sync-reader", "tls-webpki-certs", "ring-crypto"] }
 clap = { version = "4", features = ["derive"] }
 log = "0.4"
