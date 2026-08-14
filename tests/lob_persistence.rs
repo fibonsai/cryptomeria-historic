@@ -1,5 +1,5 @@
 use cryptomeria_historic::db;
-use cryptomeria_historic::items::{LobItem, LobLevel};
+use cryptomeria_nng_client::items::{LobItem, LobLevel};
 use questdb::egress::ColumnView;
 use serial_test::serial;
 use std::time::Duration;

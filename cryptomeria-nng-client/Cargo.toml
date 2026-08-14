@@ -1,0 +1,29 @@
+[package]
+name = "cryptomeria-nng-client"
+version = "0.0.1"
+edition = "2024"
+description = "NNG PUB/SUB subscriber client with per-broker connectivity tracking and framed market-data parsing."
+license = "Apache-2.0"
+repository = "https://github.com/fibonsai/cryptomeria-historic"
+categories = ["network-programming", "asynchronous"]
+keywords = ["crypto", "market-data", "nng", "pubsub", "nanomsg"]
+
+[lib]
+name = "cryptomeria_nng_client"
+path = "src/lib.rs"
+
+[dependencies]
+tokio = { version = "1", features = ["rt", "rt-multi-thread"] }
+nng = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+log = "0.4"
+anyhow = "1"
+
+[dev-dependencies]
+serial_test = "2"
+tokio = { version = "1", features = ["full"] }
+
+[profile.release]
+lto = true
+codegen-units = 1

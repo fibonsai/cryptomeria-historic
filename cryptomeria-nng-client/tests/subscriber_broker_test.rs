@@ -10,8 +10,8 @@
 //! continue surfacing `BrokerOutput::Message` events from #1 / #3 — the case
 //! #20 describes as previously un-logged.
 
-use cryptomeria_historic::forward;
-use cryptomeria_historic::subscriber::{BrokerOutput, NngSubscriber};
+use cryptomeria_nng_client::forward;
+use cryptomeria_nng_client::subscriber::{BrokerOutput, NngSubscriber};
 use nng::{Protocol, Socket};
 use serial_test::serial;
 use std::sync::Arc;

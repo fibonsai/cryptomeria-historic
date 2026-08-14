@@ -9,11 +9,11 @@ use anyhow::{Context, Result, anyhow};
 use clap::Parser;
 use cryptomeria_historic::QuestDb;
 use cryptomeria_historic::db;
-use cryptomeria_historic::forward;
-use cryptomeria_historic::items::MarketDataItem;
 use cryptomeria_historic::logging;
-use cryptomeria_historic::subscriber;
-use cryptomeria_historic::subscriber::BrokerOutput;
+use cryptomeria_nng_client::forward;
+use cryptomeria_nng_client::items::MarketDataItem;
+use cryptomeria_nng_client::subscriber;
+use cryptomeria_nng_client::subscriber::BrokerOutput;
 use questdb::BorrowedSender;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -352,13 +352,13 @@ mod tests {
 
     #[test]
     fn item_kind_classifies_variants() {
-        let lob = MarketDataItem::Lob(cryptomeria_historic::items::LobItem {
+        let lob = MarketDataItem::Lob(cryptomeria_nng_client::items::LobItem {
             ts: 0,
             exchange: String::new(),
             bids: vec![],
             asks: vec![],
         });
-        let trade = MarketDataItem::Trade(cryptomeria_historic::items::TradeItem {
+        let trade = MarketDataItem::Trade(cryptomeria_nng_client::items::TradeItem {
             ts: 0,
             exchange: String::new(),
             price: 0.0,
