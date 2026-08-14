@@ -4,9 +4,9 @@
 //! `cryptomeria-marketdata` over NNG — every column maps to a field that
 //! actually exists on the wire payload.
 
+use crate::items::{LobItem, TradeItem};
 use crate::migrate::QuestDbMigrator;
 use anyhow::Result;
-use cryptomeria_nng_client::items::{LobItem, TradeItem};
 use questdb::BorrowedSender;
 pub use questdb::QuestDb;
 use questdb::ingress::{Buffer, TimestampNanos};

@@ -1,9 +1,8 @@
 //! # cryptomeria-nng-client
 //!
-//! Reusable NNG PUB/SUB subscriber client for normalised market-data feeds.
+//! Generic, reusable NNG PUB/SUB subscriber client.
 //!
-//! Connects to one or more external NNG PUB sockets (`cryptomeria-marketdata`),
-//! receives framed `{topic}\0{json-payload}` messages, and emits structured
+//! Connects to one or more external NNG PUB sockets and emits structured
 //! `BrokerOutput` events (`Message`, `Down`, `Up`) on a shared channel.
 //!
 //! Each configured broker gets its own `nng::Sub0` socket on its own
@@ -13,19 +12,13 @@
 //!
 //! ## Wire format
 //!
-//! Messages published by `cryptomeria-marketdata` are a single NNG message:
-//! `{topic} ␀ payload` where `topic` is a UTF-8 string (`{kind}__{instrument}`,
-//! e.g. `lob__btcusdt`) and `payload` is the JSON serialisation of a
-//! [`MarketDataItem`].
+//! Messages are a single NNG message: `{topic} ␀ payload` where `topic` is a
+//! UTF-8 string and `payload` is an opaque byte slice. The payload deserialisation
+//! and topic classification are the consumer's responsibility — this crate stays
+//! payload-agnostic so it can serve any topic / payload convention.
 
 pub mod forward;
-pub mod items;
 pub mod subscriber;
 
-pub use forward::{frame_message, parse_frame, split_frame};
-pub use items::{LobItem, LobLevel, MarketDataItem, TradeItem};
-pub use subscriber::{
-    BrokerOutput, BrokerReader, ConnEvent, NngSubscriber, classify_topic, connectivity_event,
-};
-
-pub use subscriber::{LOB_TOPIC_PREFIX, TRADE_TOPIC_PREFIX};
+pub use forward::{FRAME_SEPARATOR, frame_message, split_frame};
+pub use subscriber::{BrokerOutput, BrokerReader, ConnEvent, NngSubscriber, connectivity_event};

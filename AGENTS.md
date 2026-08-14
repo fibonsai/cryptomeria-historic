@@ -14,35 +14,41 @@ This file describes conventions and workflows for AI agents working on
 
 ```
 .
-├── Cargo.toml              # crate manifest (lib + bin)
-├── build.rs                # generates MIGRATIONS const from migration files
-├── Makefile                # dev / CI helper targets
-├── AGENTS.md               # this file
-├── README.md               # user-facing documentation
-├── CONTRIBUTING.md         # human contributor guidelines
+├── cryptomeria-nng-client/          # generic NNG PUB/SUB transport crate (path dep)
+│   ├── Cargo.toml
+│   └── src/
+│       ├── lib.rs                  # re-exports
+│       ├── forward.rs              # generic frame helpers (split_frame, frame_message)
+│       └── subscriber.rs           # NNG SUB socket lifecycle, per-broker connectivity tracking
+├── Cargo.toml                       # crate manifest (lib + bin)
+├── build.rs                         # generates MIGRATIONS const from migration files
+├── Makefile                         # dev / CI helper targets
+├── AGENTS.md                        # this file
+├── README.md                        # user-facing documentation
+├── CONTRIBUTING.md                  # human contributor guidelines
 ├── src/
-│   ├── lib.rs              # re-exports; crate-level doc
-│   ├── main.rs             # CLI binary entry point
-│   ├── forward.rs          # NNG wire-frame parsing (topic ␀ JSON)
-│   ├── items.rs            # MarketDataItem / LobItem / TradeItem types
-│   ├── subscriber.rs       # NNG SUB socket lifecycle: one BrokerReader (Sub0) per PUB broker, per-broker pipe_notify, BrokerOutput channel, down/up logging
-│   ├── db/mod.rs           # QuestDB connection + persistence helpers
-│   ├── db/migrations/      # embedded SQL migration files (scanned by build.rs)
-│   ├── migrate.rs          # schema-versioned migration runner (QWP/WebSocket)
-│   └── logging.rs          # env_logger initializer (init())
-└── tests/                  # integration tests, including mock NNG PUB brokers on localhost ephemeral ports
+│   ├── lib.rs                      # re-exports; crate-level doc
+│   ├── main.rs                     # CLI binary entry point
+│   ├── forward.rs                  # wire-frame parsing: split frame, parse to MarketDataItem
+│   ├── items.rs                    # MarketDataItem / LobItem / TradeItem types
+│   ├── topics.rs                   # topic classification (classify_topic, extract_topic_segment)
+│   ├── db/mod.rs                   # QuestDB connection + persistence helpers
+│   ├── db/migrations/              # embedded SQL migration files (scanned by build.rs)
+│   ├── migrate.rs                  # schema-versioned migration runner (QWP/WebSocket)
+│   └── logging.rs                  # env_logger initializer (init())
+└── tests/                          # integration tests, including mock NNG PUB brokers on localhost ephemeral ports
 ```
 
 ## Module boundaries
 
-| Module        | Responsibility                              |
-|---------------|---------------------------------------------|
-| `forward`     | Wire format: split / parse / frame messages |
-| `items`       | Serde types for LOB and trade payloads      |
-| `subscriber`  | NNG SUB socket lifecycle, per-broker connectivity tracking (down/up), `BrokerOutput` channel, topic filtering |
+| Module        | Responsibility                                      |
+|---------------|-----------------------------------------------------|
+| `forward`     | Wire format: frame messages, split frames, parse to `MarketDataItem` |
+| `items`       | Serde types for LOB and trade payloads              |
+| `topics`      | Topic classification: `classify_topic`, `extract_topic_segment` |
 | `db`          | QuestDB QWP/WebSocket persistence + config resolution |
-| `migrate`     | Migration tracking via `schema_version` table         |
-| `logging`     | env_logger initializer (`init()`)             |
+| `migrate`     | Migration tracking via `schema_version` table       |
+| `logging`     | env_logger initializer (`init()`)                  |
 
 ## Conventions
 
@@ -116,7 +122,7 @@ This file describes conventions and workflows for AI agents working on
 * Use `serial_test` for tests that touch process-wide state.
 * Keep tests hermetic — no network, no QuestDB, no NNG broker. (Connectivity
   transitions are unit-tested via the pure `connectivity_event` helper in
-  `subscriber.rs`; per-broker end-to-end behaviour is covered by integration
+  `cryptomeria-nng-client/src/subscriber.rs`; per-broker end-to-end behaviour is covered by integration
   tests with in-process mock PUBs.)
 
 ### Add an integration test

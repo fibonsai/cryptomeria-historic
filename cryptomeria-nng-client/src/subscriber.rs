@@ -23,11 +23,6 @@ const RECV_TIMEOUT_MS: u64 = 500;
 /// drop within ~1 s.
 const DOWN_THRESHOLD_TICKS: u32 = 2;
 
-/// Topic prefix for LOB messages.
-pub const LOB_TOPIC_PREFIX: &str = "lob__";
-/// Topic prefix for trade messages.
-pub const TRADE_TOPIC_PREFIX: &str = "trade__";
-
 /// Output of a single broker reader. Connectivity events (`Down`/`Up`) are
 /// emitted once per state transition; `Message` is forwarded verbatim.
 ///
@@ -288,45 +283,9 @@ impl Drop for NngSubscriber {
     }
 }
 
-/// Classify a topic into `("lob" | "trade", instrument)` or `None` when the
-/// topic doesn't match either prefix.
-pub fn classify_topic(topic: &str) -> Option<(&'static str, &str)> {
-    if let Some(inst) = topic.strip_prefix(LOB_TOPIC_PREFIX)
-        && !inst.is_empty()
-    {
-        return Some(("lob", inst));
-    }
-    if let Some(inst) = topic.strip_prefix(TRADE_TOPIC_PREFIX)
-        && !inst.is_empty()
-    {
-        return Some(("trade", inst));
-    }
-    None
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn classifies_lob_topic() {
-        assert_eq!(classify_topic("lob__btcusdt"), Some(("lob", "btcusdt")));
-    }
-
-    #[test]
-    fn classifies_trade_topic() {
-        assert_eq!(classify_topic("trade__btcusd"), Some(("trade", "btcusd")));
-    }
-
-    #[test]
-    fn returns_none_for_unknown_prefix() {
-        assert_eq!(classify_topic("foo__bar"), None);
-    }
-
-    #[test]
-    fn returns_none_for_empty_instrument() {
-        assert_eq!(classify_topic("lob__"), None);
-    }
 
     #[test]
     fn new_with_empty_addrs_creates_no_brokers() {

@@ -17,7 +17,9 @@ via the QWP/WebSocket protocol (QuestDB 10+).
 cryptomeria-marketdata ──NNG PUB──► cryptomeria-historic ──QWP/WS──► QuestDB
 ```
 
- * **NNG subscriber** — one `Sub0` socket per configured broker (Option 3 per
+ * **NNG subscriber** — provided by the [`cryptomeria-nng-client`](cryptomeria-nng-client)
+   crate (generic, reusable NNG PUB/SUB transport). One `Sub0` socket per
+   configured broker (Option 3 per
    [ADR-007](docs/adr/Operations/ADR-007-20260814-per-broker-connectivity-tracking-via-pipe-notify.md)),
    each on a `tokio::task::spawn_blocking` task. `pipe_notify` maintains a
    per-broker live-pipe count; a `recv()` timeout combined with that count
@@ -26,7 +28,7 @@ cryptomeria-marketdata ──NNG PUB──► cryptomeria-historic ──QWP/WS�
    is tracked per broker, a down broker is logged even while sibling brokers keep
    delivering data. A single blocking consumer thread drains the `mpsc` channel of
    `BrokerOutput` events, filters by topic prefix (`lob__`, `trade__`), parses
-   wire frames, and hands rows to QuestDB.
+   wire frames (see `src/topics.rs` and `src/forward.rs`), and hands rows to QuestDB.
  * **QuestDB writer** — persists rows via `questdb-rs` QWP/WebSocket `BorrowedSender`
    on the dedicated consumer thread (it is `!Send`).
  * **Migration runner** — executes embedded SQL migrations on startup via `BorrowedReader::execute`
