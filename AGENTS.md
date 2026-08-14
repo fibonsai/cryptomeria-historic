@@ -25,7 +25,7 @@ This file describes conventions and workflows for AI agents working on
 │   ├── main.rs             # CLI binary entry point
 │   ├── forward.rs          # NNG wire-frame parsing (topic ␀ JSON)
 │   ├── items.rs            # MarketDataItem / LobItem / TradeItem types
-│   ├── subscriber.rs       # NNG SUB socket lifecycle + topic filtering
+│   ├── subscriber.rs       # NNG SUB socket lifecycle + per-broker pipe tracking + topic filtering
 │   ├── db/mod.rs           # QuestDB connection + persistence helpers
 │   ├── db/migrations/      # embedded SQL migration files (scanned by build.rs)
 │   ├── migrate.rs          # schema-versioned migration runner (QWP/WebSocket)
@@ -39,7 +39,7 @@ This file describes conventions and workflows for AI agents working on
 |---------------|---------------------------------------------|
 | `forward`     | Wire format: split / parse / frame messages |
 | `items`       | Serde types for LOB and trade payloads      |
-| `subscriber`  | NNG SUB socket lifecycle + topic filtering  |
+| `subscriber`  | NNG SUB socket lifecycle, per-broker connectivity tracking, topic filtering |
 | `db`          | QuestDB QWP/WebSocket persistence + config resolution |
 | `migrate`     | Migration tracking via `schema_version` table         |
 | `logging`     | env_logger initializer (`init()`)             |
