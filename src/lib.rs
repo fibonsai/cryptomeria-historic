@@ -16,4 +16,6 @@ pub mod subscriber;
 pub use db::QuestDb;
 pub use forward::{frame_message, parse_frame, split_frame};
 pub use items::{LobItem, LobLevel, MarketDataItem, TradeItem};
-pub use subscriber::{NngSubscriber, classify_topic};
+pub use subscriber::{
+    BrokerOutput, BrokerReader, ConnEvent, NngSubscriber, classify_topic, connectivity_event,
+};

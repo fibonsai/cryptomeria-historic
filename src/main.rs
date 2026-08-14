@@ -13,12 +13,14 @@ use cryptomeria_historic::forward;
 use cryptomeria_historic::items::MarketDataItem;
 use cryptomeria_historic::logging;
 use cryptomeria_historic::subscriber;
+use cryptomeria_historic::subscriber::BrokerOutput;
 use questdb::BorrowedSender;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 
+const RECV_TIMEOUT_MS: u64 = 500;
 const RECV_TIMEOUT_WARN_INTERVAL_SECS: u64 = 5;
 
 /// CLI options.
@@ -129,17 +131,15 @@ fn parse_nng_addrs(addrs: &str) -> Vec<String> {
         .collect()
 }
 
-/// Format the broker-down warning message that includes the broker addresses.
-fn format_broker_down_warning(elapsed_secs: u64, nng_addrs: &[String]) -> String {
-    format!(
-        "[receive_loop] no messages received in {elapsed_secs}s — NNG broker(s) may be down: {}",
-        nng_addrs.join(", ")
-    )
-}
-
-/// Blocking receive loop running on a dedicated thread.
+/// Blocking consume loop running on a dedicated thread.
+///
+/// Reads `BrokerOutput` events from the per-broker channel. `Message` events are
+/// forwarded to `process_message` (and QuestDB when not in dry-run); `Down`/`Up`
+/// events are logged per broker. A periodic recv-timeout provides a low-frequency
+/// catch-all when *all* brokers are silent. This thread holds the `!Send`
+/// `BorrowedSender`, so it must stay a dedicated OS thread (not a `tokio::spawn`).
 fn receive_loop(
-    sub_socket: subscriber::NngSubscriber,
+    rx: std::sync::mpsc::Receiver<BrokerOutput>,
     questdb: Option<Arc<QuestDb>>,
     shutdown: Arc<AtomicBool>,
     dry_run: bool,
@@ -149,35 +149,39 @@ fn receive_loop(
             .expect("failed to borrow sender from QuestDB pool")
     });
 
-    let mut last_timeout_warn = std::time::Instant::now();
+    let mut last_message = std::time::Instant::now();
+    let tick = Duration::from_millis(RECV_TIMEOUT_MS);
 
     loop {
         if shutdown.load(Ordering::Relaxed) {
-            log::info!("shutdown requested, stopping receive loop");
+            log::info!("[receive_loop] shutdown requested, stopping receive loop");
             break;
         }
-
-        match sub_socket.recv() {
-            Ok(message) => {
-                last_timeout_warn = std::time::Instant::now();
-                if let Err(e) = process_message(message.as_slice(), sender.as_mut(), dry_run) {
+        match rx.recv_timeout(tick) {
+            Ok(BrokerOutput::Message(msg)) => {
+                last_message = std::time::Instant::now();
+                if let Err(e) = process_message(msg.as_slice(), sender.as_mut(), dry_run) {
                     log::error!("processing error: {e}");
                 }
             }
-            Err(nng::Error::TimedOut) => {
-                if last_timeout_warn.elapsed().as_secs() >= RECV_TIMEOUT_WARN_INTERVAL_SECS {
-                    let down = sub_socket.down_addrs();
-                    log::warn!(
-                        "{}",
-                        format_broker_down_warning(last_timeout_warn.elapsed().as_secs(), &down)
-                    );
-                    last_timeout_warn = std::time::Instant::now();
-                }
-                continue;
+            Ok(BrokerOutput::Down { addr }) => {
+                log::warn!("[subscriber] broker `{addr}` down");
             }
-            Err(e) => {
-                log::warn!("NNG recv error: {e}");
-                thread::sleep(Duration::from_millis(500));
+            Ok(BrokerOutput::Up { addr }) => {
+                log::info!("[subscriber] broker `{addr}` recovered");
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                if last_message.elapsed().as_secs() >= RECV_TIMEOUT_WARN_INTERVAL_SECS {
+                    log::warn!(
+                        "[subscriber] no messages from any broker for {}s — all brokers may be down",
+                        last_message.elapsed().as_secs()
+                    );
+                    last_message = std::time::Instant::now();
+                }
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                log::warn!("[subscriber] all brokers disconnected, receive loop exiting");
+                break;
             }
         }
     }
@@ -231,13 +235,15 @@ async fn main() -> Result<()> {
             nng_addrs.join(", ")
         )
     })?;
-    log::info!("[system] subscribed to NNG PUB broker(s)");
+    log::info!("[system] subscribed to {} NNG broker(s)", nng_addrs.len());
 
-    // Spawn the blocking receive loop.
+    // One blocking task per broker (spawn_blocking) feeds a single channel of
+    // BrokerOutput events; the consumer above drains it on a dedicated thread
+    // (it holds the !Send BorrowedSender, so it cannot be a tokio task).
     let shutdown = Arc::new(AtomicBool::new(false));
-    let shutdown_loop = Arc::clone(&shutdown);
-    let handle =
-        thread::spawn(move || receive_loop(sub_socket, questdb, shutdown_loop, cli.dry_run));
+    let (rx, broker_handles) = sub_socket.run(shutdown.clone());
+    let shutdown_consumer = Arc::clone(&shutdown);
+    let handle = thread::spawn(move || receive_loop(rx, questdb, shutdown_consumer, cli.dry_run));
     log::info!("[system] forwarder running (Ctrl+C to stop)");
 
     // Wait for shutdown signal.
@@ -258,7 +264,12 @@ async fn main() -> Result<()> {
 
     shutdown.store(true, Ordering::SeqCst);
 
-    // Drain the recv timeout window (~500 ms) so the loop notices shutdown.
+    // Stop the per-broker recv tasks first; once their `tx` clones drop, the
+    // consumer's channel disconnects and the consumer exits within the recv
+    // timeout window (~500 ms).
+    for h in broker_handles {
+        let _ = h.await;
+    }
     if handle.join().is_err() {
         log::warn!("[system] forwarder thread did not join cleanly");
     }
@@ -381,57 +392,5 @@ mod tests {
     fn process_message_succeeds_not_dry_run_with_no_sender() {
         process_message(&lob_frame(), None, false).unwrap();
         process_message(&trade_frame(), None, false).unwrap();
-    }
-
-    #[test]
-    fn format_broker_down_warning_includes_addresses() {
-        let addrs = vec!["tcp://127.0.0.1:14242".to_string()];
-        let msg = format_broker_down_warning(5, &addrs);
-        assert!(
-            msg.contains("tcp://127.0.0.1:14242"),
-            "warning must include broker address: {msg}"
-        );
-        assert!(
-            msg.contains("5s"),
-            "warning must include elapsed seconds: {msg}"
-        );
-    }
-
-    #[test]
-    fn format_broker_down_warning_lists_multiple_addresses() {
-        let addrs = vec![
-            "tcp://1.2.3.4:14242".to_string(),
-            "tcp://5.6.7.8:14242".to_string(),
-        ];
-        let msg = format_broker_down_warning(10, &addrs);
-        assert!(
-            msg.contains("tcp://1.2.3.4:14242"),
-            "warning must list first broker: {msg}"
-        );
-        assert!(
-            msg.contains("tcp://5.6.7.8:14242"),
-            "warning must list second broker: {msg}"
-        );
-    }
-
-    #[test]
-    fn format_broker_down_warning_with_subset_excludes_healthy_brokers() {
-        let all_addrs: [String; 2] = [
-            "tcp://127.0.0.1:14243".to_string(),
-            "tcp://127.0.0.1:14244".to_string(),
-        ];
-        let down_only = vec!["tcp://127.0.0.1:14243".to_string()];
-        let msg = format_broker_down_warning(5, &down_only);
-        assert!(
-            msg.contains("tcp://127.0.0.1:14243"),
-            "warning must include down broker: {msg}"
-        );
-        assert!(
-            !msg.contains("tcp://127.0.0.1:14244"),
-            "warning must not include healthy broker: {msg}"
-        );
-        // Sanity: the full list has both; the subset has only one.
-        assert_eq!(all_addrs.len(), 2);
-        assert_eq!(down_only.len(), 1);
     }
 }

@@ -3,9 +3,15 @@
 | Field        | Value |
 |--------------|-------|
 | **Category** | Operations |
-| **Status**   | Accepted |
+| **Status**   | Superseded (by ADR-008) |
 | **Created**  | 2026-08-14 08:30 |
 | **Implemented** | [PR #19](https://github.com/fibonsai/cryptomeria-historic/pull/19) |
+
+> **Superseded by [ADR-008](ADR-008-switch-to-per-broker-sub-sockets.md).**
+> ADR-007's single-multiplexed-socket Option 1 cannot attribute a `recv` timeout
+> to a specific broker, so a down secondary broker was logged only when *all*
+> brokers were silent. ADR-008 adopts per-broker `Sub0` sockets (Option 3), each
+> on its own `spawn_blocking` task, for correct per-broker disconnect logging.
 
 ## Context
 
