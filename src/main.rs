@@ -73,7 +73,17 @@ fn process_message(
                 db::persist_lob(s, inst_id, lob).context("failed to persist lob levels")?;
             }
             if dry_run || log::log_enabled!(log::Level::Debug) {
-                log::info!("{topic}: lob {level_count} levels (ts={})", lob.ts);
+                let level = if dry_run {
+                    log::Level::Info
+                } else {
+                    log::Level::Debug
+                };
+                log::log!(
+                    level,
+                    "[forwarder] {topic}: lob {level_count} levels (ts={}) exchange={}",
+                    lob.ts,
+                    lob.exchange
+                );
             }
         }
         (MarketDataItem::Trade(trade), "trade") => {
@@ -81,12 +91,19 @@ fn process_message(
                 db::persist_trade(s, inst_id, trade).context("failed to persist trade")?;
             }
             if dry_run || log::log_enabled!(log::Level::Debug) {
-                log::info!(
-                    "{topic}: trade px={} sz={} side={} (ts={})",
+                let level = if dry_run {
+                    log::Level::Info
+                } else {
+                    log::Level::Debug
+                };
+                log::log!(
+                    level,
+                    "[forwarder] {topic}: trade px={} sz={} side={} (ts={}) exchange={}",
                     trade.price,
                     trade.size,
                     trade.side,
-                    trade.ts
+                    trade.ts,
+                    trade.exchange
                 );
             }
         }
