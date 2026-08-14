@@ -25,12 +25,12 @@ This file describes conventions and workflows for AI agents working on
 │   ├── main.rs             # CLI binary entry point
 │   ├── forward.rs          # NNG wire-frame parsing (topic ␀ JSON)
 │   ├── items.rs            # MarketDataItem / LobItem / TradeItem types
-│   ├── subscriber.rs       # NNG SUB socket lifecycle + per-broker pipe tracking + topic filtering
+│   ├── subscriber.rs       # NNG SUB socket lifecycle: one BrokerReader (Sub0) per PUB broker, per-broker pipe_notify, BrokerOutput channel, down/up logging
 │   ├── db/mod.rs           # QuestDB connection + persistence helpers
 │   ├── db/migrations/      # embedded SQL migration files (scanned by build.rs)
 │   ├── migrate.rs          # schema-versioned migration runner (QWP/WebSocket)
 │   └── logging.rs          # env_logger initializer (init())
-└── tests/                  # integration tests (currently empty)
+└── tests/                  # integration tests, including mock NNG PUB brokers on localhost ephemeral ports
 ```
 
 ## Module boundaries
@@ -39,7 +39,7 @@ This file describes conventions and workflows for AI agents working on
 |---------------|---------------------------------------------|
 | `forward`     | Wire format: split / parse / frame messages |
 | `items`       | Serde types for LOB and trade payloads      |
-| `subscriber`  | NNG SUB socket lifecycle, per-broker connectivity tracking, topic filtering |
+| `subscriber`  | NNG SUB socket lifecycle, per-broker connectivity tracking (down/up), `BrokerOutput` channel, topic filtering |
 | `db`          | QuestDB QWP/WebSocket persistence + config resolution |
 | `migrate`     | Migration tracking via `schema_version` table         |
 | `logging`     | env_logger initializer (`init()`)             |
@@ -79,6 +79,12 @@ This file describes conventions and workflows for AI agents working on
   The config string must use `ws::addr=`; ILP (`http::addr=`) is not supported.
 * Migrations and TTL execute via `BorrowedReader::execute` over QWP/WebSocket
   (replacing the previous `reqwest` HTTP REST API).
+* `questdb::BorrowedSender` is `!Send` (it carries `PhantomData<Rc<()>>`), so
+  the QuestDB-writing consumer runs on a dedicated OS thread
+  (`std::thread::spawn`), not a `tokio::spawn` task. Per-broker NNG
+  `Sub0` sockets each run on a `tokio::task::spawn_blocking` task (their `recv()`
+  is blocking C FFI) and feed an `mpsc` channel of `BrokerOutput` events consumed
+  by that thread.
 
 ### Paths
 
@@ -108,11 +114,17 @@ This file describes conventions and workflows for AI agents working on
 
 * Place `#[cfg(test)] mod tests` at the bottom of the relevant module file.
 * Use `serial_test` for tests that touch process-wide state.
-* Keep tests hermetic — no network, no QuestDB, no NNG broker.
+* Keep tests hermetic — no network, no QuestDB, no NNG broker. (Connectivity
+  transitions are unit-tested via the pure `connectivity_event` helper in
+  `subscriber.rs`; per-broker end-to-end behaviour is covered by integration
+  tests with in-process mock PUBs.)
 
 ### Add an integration test
 
 * Place tests in the `tests/` directory (each `.rs` file is a separate test binary).
 * Use `testcontainers` (dev-dependency) to spin up a real QuestDB 10+ container.
 * Set `DOCKER_HOST` if the Docker socket is not at the default path.
+* For NNG-level behaviour, spin up in-process mock `nng::Protocol::Pub0` sockets
+  bound to `tcp://127.0.0.1:0` (localhost ephemeral — no Docker, hermetic) and
+  drive `NngSubscriber::run` against them. Mark these `#[serial]`.
 * Mark long-running container tests with `#[serial]` to avoid resource contention.
