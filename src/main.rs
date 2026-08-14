@@ -129,12 +129,21 @@ fn parse_nng_addrs(addrs: &str) -> Vec<String> {
         .collect()
 }
 
+/// Format the broker-down warning message that includes the broker addresses.
+fn format_broker_down_warning(elapsed_secs: u64, nng_addrs: &[String]) -> String {
+    format!(
+        "[receive_loop] no messages received in {elapsed_secs}s — NNG broker(s) may be down: {}",
+        nng_addrs.join(", ")
+    )
+}
+
 /// Blocking receive loop running on a dedicated thread.
 fn receive_loop(
     sub_socket: subscriber::NngSubscriber,
     questdb: Option<Arc<QuestDb>>,
     shutdown: Arc<AtomicBool>,
     dry_run: bool,
+    nng_addrs: &[String],
 ) {
     let mut sender: Option<BorrowedSender> = questdb.as_ref().map(|db| {
         db.borrow_sender()
@@ -159,8 +168,11 @@ fn receive_loop(
             Err(nng::Error::TimedOut) => {
                 if last_timeout_warn.elapsed().as_secs() >= RECV_TIMEOUT_WARN_INTERVAL_SECS {
                     log::warn!(
-                        "no messages received in {}s — NNG broker may be down",
-                        last_timeout_warn.elapsed().as_secs()
+                        "{}",
+                        format_broker_down_warning(
+                            last_timeout_warn.elapsed().as_secs(),
+                            nng_addrs
+                        )
                     );
                     last_timeout_warn = std::time::Instant::now();
                 }
@@ -227,8 +239,9 @@ async fn main() -> Result<()> {
     // Spawn the blocking receive loop.
     let shutdown = Arc::new(AtomicBool::new(false));
     let shutdown_loop = Arc::clone(&shutdown);
-    let handle =
-        thread::spawn(move || receive_loop(sub_socket, questdb, shutdown_loop, cli.dry_run));
+    let handle = thread::spawn(move || {
+        receive_loop(sub_socket, questdb, shutdown_loop, cli.dry_run, &nng_addrs)
+    });
     log::info!("[system] forwarder running (Ctrl+C to stop)");
 
     // Wait for shutdown signal.
@@ -372,5 +385,36 @@ mod tests {
     fn process_message_succeeds_not_dry_run_with_no_sender() {
         process_message(&lob_frame(), None, false).unwrap();
         process_message(&trade_frame(), None, false).unwrap();
+    }
+
+    #[test]
+    fn format_broker_down_warning_includes_addresses() {
+        let addrs = vec!["tcp://127.0.0.1:14242".to_string()];
+        let msg = format_broker_down_warning(5, &addrs);
+        assert!(
+            msg.contains("tcp://127.0.0.1:14242"),
+            "warning must include broker address: {msg}"
+        );
+        assert!(
+            msg.contains("5s"),
+            "warning must include elapsed seconds: {msg}"
+        );
+    }
+
+    #[test]
+    fn format_broker_down_warning_lists_multiple_addresses() {
+        let addrs = vec![
+            "tcp://1.2.3.4:14242".to_string(),
+            "tcp://5.6.7.8:14242".to_string(),
+        ];
+        let msg = format_broker_down_warning(10, &addrs);
+        assert!(
+            msg.contains("tcp://1.2.3.4:14242"),
+            "warning must list first broker: {msg}"
+        );
+        assert!(
+            msg.contains("tcp://5.6.7.8:14242"),
+            "warning must list second broker: {msg}"
+        );
     }
 }
