@@ -7,20 +7,25 @@
 //! QuestDB via QWP/WebSocket (QuestDB 10+) with embedded schema-versioned
 //! migrations.
 //!
-//! NNG subscriber / wire-format / items logic lives in the
-//! `cryptomeria-nng-client` crate and is re-exported here for compatibility.
+//! Domain-specific types (items, topic classification, payload parsing) live in
+//! local modules; generic NNG transport (sockets, connectivity tracking, frame
+//! splitting) comes from the `cryptomeria-nng-client` crate.
 
 pub mod db;
+pub mod forward;
+pub mod items;
 pub mod logging;
 pub mod migrate;
+pub mod topics;
 
-pub use cryptomeria_nng_client::forward::{
-    FRAME_SEPARATOR, extract_topic_segment, frame_message, parse_frame, split_frame,
-};
-pub use cryptomeria_nng_client::items::{LobItem, LobLevel, MarketDataItem, TradeItem};
+// Re-export generic NNG transport types from the client crate.
 pub use cryptomeria_nng_client::subscriber::{
-    BrokerOutput, BrokerReader, ConnEvent, LOB_TOPIC_PREFIX, NngSubscriber, TRADE_TOPIC_PREFIX,
-    classify_topic, connectivity_event,
+    BrokerOutput, BrokerReader, ConnEvent, NngSubscriber, connectivity_event,
 };
+
+// Re-export domain-specific types from local modules.
+pub use forward::{FRAME_SEPARATOR, frame_message, parse_frame, split_frame};
+pub use items::{LobItem, LobLevel, MarketDataItem, TradeItem};
+pub use topics::{LOB_TOPIC_PREFIX, TRADE_TOPIC_PREFIX, classify_topic, extract_topic_segment};
 
 pub use db::QuestDb;

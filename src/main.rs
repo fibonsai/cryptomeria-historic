@@ -9,9 +9,10 @@ use anyhow::{Context, Result, anyhow};
 use clap::Parser;
 use cryptomeria_historic::QuestDb;
 use cryptomeria_historic::db;
+use cryptomeria_historic::forward;
+use cryptomeria_historic::items::MarketDataItem;
 use cryptomeria_historic::logging;
-use cryptomeria_nng_client::forward;
-use cryptomeria_nng_client::items::MarketDataItem;
+use cryptomeria_historic::topics;
 use cryptomeria_nng_client::subscriber;
 use cryptomeria_nng_client::subscriber::BrokerOutput;
 use questdb::BorrowedSender;
@@ -67,7 +68,7 @@ fn process_message(
     let (topic, item) =
         forward::parse_frame(bytes).with_context(|| "failed to parse wire frame")?;
     let (kind, inst_id) =
-        subscriber::classify_topic(&topic).ok_or_else(|| anyhow!("unrecognised topic: {topic}"))?;
+        topics::classify_topic(&topic).ok_or_else(|| anyhow!("unrecognised topic: {topic}"))?;
     let log_level = if dry_run {
         log::Level::Info
     } else {
@@ -352,13 +353,13 @@ mod tests {
 
     #[test]
     fn item_kind_classifies_variants() {
-        let lob = MarketDataItem::Lob(cryptomeria_nng_client::items::LobItem {
+        let lob = MarketDataItem::Lob(cryptomeria_historic::items::LobItem {
             ts: 0,
             exchange: String::new(),
             bids: vec![],
             asks: vec![],
         });
-        let trade = MarketDataItem::Trade(cryptomeria_nng_client::items::TradeItem {
+        let trade = MarketDataItem::Trade(cryptomeria_historic::items::TradeItem {
             ts: 0,
             exchange: String::new(),
             price: 0.0,
